@@ -7,7 +7,6 @@ package config
 		clientSecret: string
 		scopes:       [...string] | *["openid", "profile", "email"]
 		authMethod:   "basic" | "post" | *"basic"
-		redirectUrl?: string
 	}
 	user: {
 		username?: string

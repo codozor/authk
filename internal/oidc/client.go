@@ -114,10 +114,6 @@ func (c *Client) makeTokenRequest(data url.Values) (*TokenResponse, error) {
 		// For now, let's stick to strict Basic Auth.
 	}
 
-	if c.cfg.OIDC.RedirectURL != "" {
-		data.Set("redirect_uri", c.cfg.OIDC.RedirectURL)
-	}
-
 	log.Debug().
 		Str("endpoint", c.endpoints.TokenEndpoint).
 		Str("auth_method", c.cfg.OIDC.AuthMethod).

@@ -23,7 +23,6 @@ type OIDCConfig struct {
 	ClientSecret string   `json:"clientSecret"`
 	Scopes       []string `json:"scopes"`
 	AuthMethod   string   `json:"authMethod"`
-	RedirectURL  string   `json:"redirectUrl,omitempty"`
 }
 
 type UserConfig struct {

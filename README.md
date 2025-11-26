@@ -38,7 +38,6 @@ oidc: {
 	clientSecret: "your-client-secret"
 	// scopes: ["openid", "profile", "email"] // Optional, default shown
 	// authMethod: "basic" // Optional, "basic" or "post", default is "basic"
-	// redirectUrl: "https://your-redirect-url" // Optional
 }
 
 // Optional: For Resource Owner Password Credentials flow
