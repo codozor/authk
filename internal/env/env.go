@@ -51,6 +51,32 @@ func (m *Manager) Update(value string) error {
 	return m.writeLines(newLines)
 }
 
+func (m *Manager) Get() (string, error) {
+	lines, err := m.readLines()
+	if err != nil {
+		return "", err
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		var value string
+		if strings.HasPrefix(trimmed, m.key+"=") {
+			value = strings.TrimPrefix(trimmed, m.key+"=")
+		} else if strings.HasPrefix(trimmed, "export "+m.key+"=") {
+			value = strings.TrimPrefix(trimmed, "export "+m.key+"=")
+		} else {
+			continue
+		}
+
+		// Remove surrounding quotes if present
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			value = value[1 : len(value)-1]
+		}
+		return value, nil
+	}
+	return "", fmt.Errorf("key %s not found in .env file", m.key)
+}
+
 func (m *Manager) readLines() ([]string, error) {
 	file, err := os.Open(m.filePath)
 	if err != nil {

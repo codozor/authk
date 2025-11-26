@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	cuelang.org/go v0.15.1
+	github.com/fatih/color v1.18.0
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.1
 )
@@ -14,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/protocolbuffers/txtpbfmt v0.0.0-20251016062345-16587c79cd91 // indirect

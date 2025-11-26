@@ -105,6 +105,14 @@ Fetches a valid token and prints it to stdout. Useful for piping to other comman
 ./authk get
 ```
 
+### Inspect Token
+
+Reads the current token from the `.env` file and displays its decoded content (Header and Payload).
+
+```bash
+./authk inspect
+```
+
 ## License
 
 MIT
