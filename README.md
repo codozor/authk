@@ -48,6 +48,7 @@ user: {
 
 // Optional: Key to update in .env (default: "TOKEN")
 tokenKey: "MY_TOKEN"
+```
 
 ## Configuration Examples
 
