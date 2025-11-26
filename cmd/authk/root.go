@@ -76,14 +76,25 @@ updating a .env file with the valid token.`,
 			log.Info().Dur("sleep_duration", sleepDuration).Msg("Waiting for token refresh")
 			time.Sleep(sleepDuration)
 
-			token, err = client.RefreshToken(token.RefreshToken)
+			newToken, err := client.RefreshToken(token.RefreshToken)
 			if err != nil {
-				log.Error().Err(err).Msg("Failed to refresh token")
-				// Retry after short delay? Or exit?
-				// Let's retry after 10s
-				time.Sleep(10 * time.Second)
-				continue
+				log.Error().Err(err).Msg("Failed to refresh token, attempting full re-authentication")
+
+				// Try full re-authentication
+				newToken, err = client.GetToken("", "")
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to re-authenticate")
+					// Retry after short delay
+					time.Sleep(10 * time.Second)
+
+					// Force short sleep on next iteration to retry quickly
+					token.ExpiresIn = 0
+					continue
+				}
 			}
+
+			// Update token
+			token = newToken
 
 			if err := envMgr.Update(token.AccessToken); err != nil {
 				log.Error().Err(err).Msg("Failed to update .env")
