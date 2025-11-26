@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -28,15 +29,34 @@ func (m *Manager) Update(value string) error {
 	found := false
 	newLines := make([]string, 0, len(lines)+1)
 
-	// Prepare the new line content
-	// We assume simple KEY=VALUE format.
-	// If value contains spaces or special chars, we might need quoting.
-	// For tokens, it's usually safe, but let's quote it to be safe.
-	newLine := fmt.Sprintf("%s=\"%s\"", m.key, value)
+	// Regex to match:
+	// Group 1: Leading whitespace
+	// Group 2: Optional "export "
+	// Group 3: Key
+	// Group 4: Equals sign with optional surrounding whitespace
+	// Group 5: The rest of the line (value + comment)
+	regexStr := fmt.Sprintf(`^(\s*)(export\s+)?(%s)(\s*=\s*)(.*)$`, regexp.QuoteMeta(m.key))
+	re := regexp.MustCompile(regexStr)
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, m.key+"=") || strings.HasPrefix(trimmed, "export "+m.key+"=") {
+		matches := re.FindStringSubmatch(line)
+		if matches != nil {
+			indent := matches[1]
+			export := matches[2]
+			// key := matches[3] // We know it matches m.key
+			equals := matches[4]
+			rest := matches[5]
+
+			// Try to preserve comment
+			comment := ""
+			// Simple heuristic: look for " #"
+			if idx := strings.Index(rest, " #"); idx != -1 {
+				comment = rest[idx:]
+			}
+
+			// Construct new line
+			// We always quote the new value for safety
+			newLine := fmt.Sprintf("%s%s%s%s\"%s\"%s", indent, export, m.key, equals, value, comment)
 			newLines = append(newLines, newLine)
 			found = true
 		} else {
@@ -45,7 +65,8 @@ func (m *Manager) Update(value string) error {
 	}
 
 	if !found {
-		newLines = append(newLines, newLine)
+		// Append new key
+		newLines = append(newLines, fmt.Sprintf("%s=\"%s\"", m.key, value))
 	}
 
 	return m.writeLines(newLines)
@@ -57,22 +78,30 @@ func (m *Manager) Get() (string, error) {
 		return "", err
 	}
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		var value string
-		if strings.HasPrefix(trimmed, m.key+"=") {
-			value = strings.TrimPrefix(trimmed, m.key+"=")
-		} else if strings.HasPrefix(trimmed, "export "+m.key+"=") {
-			value = strings.TrimPrefix(trimmed, "export "+m.key+"=")
-		} else {
-			continue
-		}
+	regexStr := fmt.Sprintf(`^(\s*)(export\s+)?(%s)(\s*=\s*)(.*)$`, regexp.QuoteMeta(m.key))
+	re := regexp.MustCompile(regexStr)
 
-		// Remove surrounding quotes if present
-		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-			value = value[1 : len(value)-1]
+	for _, line := range lines {
+		matches := re.FindStringSubmatch(line)
+		if matches != nil {
+			valuePart := matches[5]
+
+			// Remove comment if present
+			if idx := strings.Index(valuePart, " #"); idx != -1 {
+				valuePart = valuePart[:idx]
+			}
+
+			value := strings.TrimSpace(valuePart)
+
+			// Remove surrounding quotes if present
+			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+				value = value[1 : len(value)-1]
+			} else if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+				value = value[1 : len(value)-1]
+			}
+
+			return value, nil
 		}
-		return value, nil
 	}
 	return "", fmt.Errorf("key %s not found in .env file", m.key)
 }
