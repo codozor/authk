@@ -17,10 +17,20 @@ var inspectCmd = &cobra.Command{
 	Short: "Inspect the current token",
 	Long:  `Read the token from the .env file and display its decoded content.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Try to find config file
+		if found, err := env.Find(cfgFile); err == nil {
+			cfgFile = found
+		}
+
 		// Load Config
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		// Try to find .env file
+		if found, err := env.Find(envFile); err == nil {
+			envFile = found
 		}
 
 		// Initialize Env Manager
