@@ -42,7 +42,15 @@ updating a .env file with the valid token.`,
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		log.Info().Str("env_file", envFile).Str("token_key", cfg.TokenKey).Msg("Starting authk")
+		// Prepare targets
+		var targets []config.Target
+		if len(cfg.Targets) > 0 {
+			targets = cfg.Targets
+			log.Info().Int("count", len(targets)).Msg("Configured with multiple targets")
+		} else {
+			targets = []config.Target{{File: envFile, Key: cfg.TokenKey}}
+			log.Info().Str("env_file", envFile).Str("token_key", cfg.TokenKey).Msg("Configured with single target")
+		}
 
 		// Initialize OIDC Client
 		client, err := oidc.NewClient(cfg)
@@ -50,19 +58,20 @@ updating a .env file with the valid token.`,
 			return fmt.Errorf("failed to initialize OIDC client: %w", err)
 		}
 
-		// Initialize Env Manager
-		envMgr := env.NewManager(envFile, cfg.TokenKey)
-
 		// Initial Token Retrieval
 		token, err := client.GetToken("", "")
 		if err != nil {
 			return fmt.Errorf("failed to get initial token: %w", err)
 		}
 
-		if err := envMgr.Update(token.AccessToken); err != nil {
-			log.Error().Err(err).Msg("Failed to update .env")
-		} else {
-			log.Info().Msg("Token updated in .env")
+		// Update all targets
+		for _, target := range targets {
+			mgr := env.NewManager(target.File, target.Key)
+			if err := mgr.Update(token.AccessToken); err != nil {
+				log.Error().Err(err).Str("file", target.File).Msg("Failed to update target")
+			} else {
+				log.Info().Str("file", target.File).Msg("Target updated")
+			}
 		}
 
 		// Maintenance Loop
@@ -96,10 +105,14 @@ updating a .env file with the valid token.`,
 			// Update token
 			token = newToken
 
-			if err := envMgr.Update(token.AccessToken); err != nil {
-				log.Error().Err(err).Msg("Failed to update .env")
-			} else {
-				log.Info().Msg("Token refreshed and updated in .env")
+			// Update all targets
+			for _, target := range targets {
+				mgr := env.NewManager(target.File, target.Key)
+				if err := mgr.Update(token.AccessToken); err != nil {
+					log.Error().Err(err).Str("file", target.File).Msg("Failed to update target")
+				} else {
+					log.Info().Str("file", target.File).Msg("Target updated")
+				}
 			}
 		}
 	},
