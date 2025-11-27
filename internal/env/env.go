@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -135,4 +136,43 @@ func (m *Manager) writeLines(lines []string) error {
 		}
 	}
 	return writer.Flush()
+}
+
+// Find searches for the given filename in the current directory and parent directories.
+// If found, it returns the absolute path.
+// If not found, it returns an error.
+func Find(name string) (string, error) {
+	// If name contains path separator, return it as is (cleaned)
+	if strings.Contains(name, string(os.PathSeparator)) {
+		return filepath.Clean(name), nil
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // Reached root
+		}
+		dir = parent
+	}
+
+	// Fallback: Check home directory
+	home, err := os.UserHomeDir()
+	if err == nil {
+		path := filepath.Join(home, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("%s not found", name)
 }
