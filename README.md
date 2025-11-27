@@ -80,7 +80,20 @@ oidc: {
 	clientSecret: "my-client-secret"
 	scopes:       ["openid", "profile", "email", "goauthentik.io/api"]
 }
+	scopes:       ["openid", "profile", "email", "goauthentik.io/api"]
+}
 ```
+
+## File Discovery
+
+`authk` employs a smart discovery mechanism for both the configuration file (`authk.cue`) and the `.env` file. It searches in the following order:
+
+1.  **Explicit Path**: If provided via flags (`--config`, `--env`).
+2.  **Current Directory**: Checks the current working directory.
+3.  **Parent Directories**: Walks up the directory tree to the root.
+4.  **Home Directory**: Checks the user's home directory (`$HOME`).
+
+This allows you to run `authk` from any subdirectory within your project or rely on a global configuration in your home directory.
 
 ## Usage
 
