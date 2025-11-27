@@ -103,15 +103,15 @@ func (c *Client) GetToken(username, password string) (*TokenResponse, error) {
 
 func (c *Client) makeTokenRequest(data url.Values) (*TokenResponse, error) {
 	// Handle Auth Method
+	// Handle Auth Method
+	// Default to basic
+	// RFC 6749 says client_id in body is NOT RECOMMENDED for Basic Auth,
+	// but we'll leave it out to be strict.
+	// If the user wants it in body, they should use "post" or we'd need a "basic_with_body" option.
+	// For now, let's stick to strict Basic Auth.
 	if c.cfg.OIDC.AuthMethod == "post" {
 		data.Set("client_id", c.cfg.OIDC.ClientID)
 		data.Set("client_secret", c.cfg.OIDC.ClientSecret)
-	} else {
-		// Default to basic
-		// RFC 6749 says client_id in body is NOT RECOMMENDED for Basic Auth,
-		// but we'll leave it out to be strict.
-		// If the user wants it in body, they should use "post" or we'd need a "basic_with_body" option.
-		// For now, let's stick to strict Basic Auth.
 	}
 
 	log.Debug().
@@ -140,7 +140,9 @@ func (c *Client) makeTokenRequest(data url.Values) (*TokenResponse, error) {
 	if resp.StatusCode != http.StatusOK {
 		// Try to read body for error details
 		var errResp map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+			log.Debug().Err(err).Msg("Failed to decode error response body")
+		}
 		log.Debug().Interface("error_response", errResp).Msg("Token request failed")
 		return nil, fmt.Errorf("token request returned status %d: %v", resp.StatusCode, errResp)
 	}
