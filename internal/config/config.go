@@ -15,6 +15,12 @@ type Config struct {
 	OIDC     OIDCConfig `json:"oidc"`
 	User     UserConfig `json:"user"`
 	TokenKey string     `json:"tokenKey"`
+	Targets  []Target   `json:"targets,omitempty"`
+}
+
+type Target struct {
+	File string `json:"file"`
+	Key  string `json:"key"`
 }
 
 type OIDCConfig struct {
