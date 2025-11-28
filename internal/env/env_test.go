@@ -92,3 +92,49 @@ func TestManager_Update(t *testing.T) {
 		})
 	}
 }
+
+func TestManager_Get(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env")
+	err := os.WriteFile(envFile, []byte("KEY=VALUE\n"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(envFile, "KEY")
+	val, err := m.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if val != "VALUE" {
+		t.Errorf("Get() = %s, want VALUE", val)
+	}
+
+	m2 := NewManager(envFile, "MISSING")
+	_, err = m2.Get()
+	if err == nil {
+		t.Error("Get() expected error for missing key, got nil")
+	}
+}
+
+func TestFind(t *testing.T) {
+	tmpDir := t.TempDir()
+	subdir := filepath.Join(tmpDir, "subdir")
+	os.Mkdir(subdir, 0755)
+
+	envFile := filepath.Join(tmpDir, ".env")
+	os.WriteFile(envFile, []byte(""), 0644)
+
+	// Test finding from subdir
+	wd, _ := os.Getwd()
+	defer os.Chdir(wd)
+	os.Chdir(subdir)
+
+	found, err := Find(".env")
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if found != envFile {
+		t.Errorf("Find() = %s, want %s", found, envFile)
+	}
+}
