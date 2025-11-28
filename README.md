@@ -1,5 +1,11 @@
 # authk
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/codozor/authk)](https://goreportcard.com/report/github.com/codozor/authk)
+![Build](https://img.shields.io/github/actions/workflow/status/codozor/authk/main.yml)
+[![Coverage Status](https://coveralls.io/repos/github/codozor/authk/badge.svg)](https://coveralls.io/github/codozor/authk)
+![Version](https://img.shields.io/github/v/release/codozor/authk)
+![License](https://img.shields.io/github/license/codozor/authk)
+![Go Version](https://img.shields.io/github/go-mod/go-version/codozor/authk)
 `authk` is a CLI tool designed to establish and maintain an OIDC connection. It automatically updates a `.env` file with a valid access token, ensuring your development environment always has fresh credentials.
 
 ## Features
