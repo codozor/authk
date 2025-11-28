@@ -22,11 +22,13 @@ func TestClient_GetToken(t *testing.T) {
 				t.Error(err)
 			}
 			if r.Form.Get("grant_type") == "client_credentials" {
-				json.NewEncoder(w).Encode(TokenResponse{
+				if err := json.NewEncoder(w).Encode(TokenResponse{
 					AccessToken: "mock_access_token",
 					ExpiresIn:   3600,
 					TokenType:   "Bearer",
-				})
+				}); err != nil {
+					t.Error(err)
+				}
 			} else {
 				w.WriteHeader(http.StatusBadRequest)
 			}
@@ -72,10 +74,12 @@ func TestClient_RefreshToken(t *testing.T) {
 				t.Error(err)
 			}
 			if r.Form.Get("grant_type") == "refresh_token" && r.Form.Get("refresh_token") == "valid_refresh" {
-				json.NewEncoder(w).Encode(TokenResponse{
+				if err := json.NewEncoder(w).Encode(TokenResponse{
 					AccessToken: "new_access_token",
 					ExpiresIn:   3600,
-				})
+				}); err != nil {
+					t.Error(err)
+				}
 			} else {
 				w.WriteHeader(http.StatusBadRequest)
 			}

@@ -120,15 +120,26 @@ func TestManager_Get(t *testing.T) {
 func TestFind(t *testing.T) {
 	tmpDir := t.TempDir()
 	subdir := filepath.Join(tmpDir, "subdir")
-	os.Mkdir(subdir, 0755)
+	if err := os.Mkdir(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	envFile := filepath.Join(tmpDir, ".env")
-	os.WriteFile(envFile, []byte(""), 0644)
+	if err := os.WriteFile(envFile, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Test finding from subdir
-	wd, _ := os.Getwd()
-	defer os.Chdir(wd)
-	os.Chdir(subdir)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(subdir); err != nil {
+		t.Fatal(err)
+	}
 
 	found, err := Find(".env")
 	if err != nil {
