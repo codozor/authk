@@ -68,9 +68,11 @@ func TestClient_RefreshToken(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			json.NewEncoder(w).Encode(map[string]string{
+			if err := json.NewEncoder(w).Encode(map[string]string{
 				"token_endpoint": "http://" + r.Host + "/token",
-			})
+			}); err != nil {
+				t.Error(err)
+			}
 		case "/token":
 			if err := r.ParseForm(); err != nil {
 				t.Error(err)
