@@ -149,3 +149,32 @@ func TestFind(t *testing.T) {
 		t.Errorf("Find() = %s, want %s", found, envFile)
 	}
 }
+
+func TestFind_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	wd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the file doesn't exist in tmpDir or parents (unlikely but possible if running in root)
+	// And strictly speaking, we should ensure it's not in home dir either for the fallback.
+	// But a random name is safe enough.
+	_, err := Find("non_existent_file_random_12345")
+	if err == nil {
+		t.Error("Find() expected error for non-existent file, got nil")
+	}
+}
+
+func TestFind_WithSeparator(t *testing.T) {
+	// On Linux, this is an absolute path
+	path := "/tmp/foo/.env"
+	found, err := Find(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != path {
+		t.Errorf("Find() = %s, want %s", found, path)
+	}
+}

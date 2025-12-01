@@ -91,6 +91,70 @@ func TestClient_GetToken(t *testing.T) {
 	}
 }
 
+func TestClient_GetToken_Password(t *testing.T) {
+	// Mock OIDC Provider
+	var testServer *httptest.Server
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			}); err != nil {
+				t.Error(err)
+			}
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if r.Form.Get("grant_type") == "password" && r.Form.Get("username") == "testuser" && r.Form.Get("password") == "testpass" {
+				w.Header().Set("Content-Type", "application/json")
+				resp := mockTokenResponse{
+					AccessToken: "mock_password_access_token",
+					ExpiresIn:   3600,
+					TokenType:   "Bearer",
+				}
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
+					t.Error(err)
+				}
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	testServer = httptest.NewServer(handler)
+	defer testServer.Close()
+
+	cfg := &config.Config{
+		OIDC: config.OIDCConfig{
+			IssuerURL:    testServer.URL,
+			ClientID:     "client",
+			ClientSecret: "secret",
+			AuthMethod:   "client_secret_basic",
+		},
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	token, err := client.GetToken("testuser", "testpass")
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+
+	if token.AccessToken != "mock_password_access_token" {
+		t.Errorf("expected access token 'mock_password_access_token', got %s", token.AccessToken)
+	}
+}
+
 func TestClient_RefreshToken(t *testing.T) {
 	var testServer *httptest.Server
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +191,9 @@ func TestClient_RefreshToken(t *testing.T) {
 			}
 		case "/certs":
 			// Provide a minimal JWKS endpoint for go-oidc
-			w.Write([]byte(`{"keys":[]}`))
+			if _, err := w.Write([]byte(`{"keys":[]}`)); err != nil {
+				t.Errorf("w.Write failed: %v", err)
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
