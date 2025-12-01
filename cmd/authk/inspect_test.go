@@ -53,7 +53,9 @@ func TestPrintJSON(t *testing.T) {
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("Failed to copy output: %v", err)
+	}
 	output := buf.String()
 
 	// Log output for debugging if needed
