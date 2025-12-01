@@ -1,82 +1,68 @@
 package oidc
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/codozor/authk/internal/config"
 	"github.com/rs/zerolog/log"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
-type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-}
-
 type Client struct {
-	cfg        *config.Config
-	httpClient *http.Client
-	endpoints  *providerEndpoints
-}
-
-type providerEndpoints struct {
-	TokenEndpoint string `json:"token_endpoint"`
+	cfg          *config.Config
+	provider     *oidc.Provider
+	oauth2Config *oauth2.Config
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
-	c := &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-	}
+	ctx := context.Background()
 
-	if err := c.discoverEndpoints(); err != nil {
-		return nil, err
-	}
+	// Use custom HTTP client with timeout
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	ctx = oidc.ClientContext(ctx, httpClient)
 
-	return c, nil
-}
-
-func (c *Client) discoverEndpoints() error {
-	wellKnownURL := strings.TrimRight(c.cfg.OIDC.IssuerURL, "/") + "/.well-known/openid-configuration"
-	resp, err := c.httpClient.Get(wellKnownURL)
+	provider, err := oidc.NewProvider(ctx, cfg.OIDC.IssuerURL)
 	if err != nil {
-		return fmt.Errorf("failed to fetch discovery document: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("discovery request failed with status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("failed to discover OIDC provider: %w", err)
 	}
 
-	var endpoints providerEndpoints
-	if err := json.NewDecoder(resp.Body).Decode(&endpoints); err != nil {
-		return fmt.Errorf("failed to decode discovery document: %w", err)
+	// Determine AuthStyle based on AuthMethod
+	var authStyle oauth2.AuthStyle
+	switch cfg.OIDC.AuthMethod {
+	case "client_secret_post":
+		authStyle = oauth2.AuthStyleInParams
+	case "client_secret_basic", "": // Default to basic if not specified
+		authStyle = oauth2.AuthStyleInHeader
+	default:
+		return nil, fmt.Errorf("unsupported auth method: %s", cfg.OIDC.AuthMethod)
 	}
 
-	c.endpoints = &endpoints
-	return nil
+	oauth2Config := &oauth2.Config{
+		ClientID:     cfg.OIDC.ClientID,
+		ClientSecret: cfg.OIDC.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:     provider.Endpoint().AuthURL,
+			TokenURL:    provider.Endpoint().TokenURL,
+			AuthStyle: authStyle, // Set AuthStyle here
+		},
+		Scopes:       cfg.OIDC.Scopes,
+	}
+
+	return &Client{
+		cfg:          cfg,
+		provider:     provider,
+		oauth2Config: oauth2Config,
+	}, nil
 }
 
-func (c *Client) RefreshToken(refreshToken string) (*TokenResponse, error) {
-	log.Info().Msg("Refreshing token...")
-
-	data := url.Values{}
-	data.Set("grant_type", "refresh_token")
-	data.Set("refresh_token", refreshToken)
-
-	return c.makeTokenRequest(data)
-}
-
-func (c *Client) GetToken(username, password string) (*TokenResponse, error) {
-	data := url.Values{}
-	data.Set("scope", strings.Join(c.cfg.OIDC.Scopes, " "))
+func (c *Client) GetToken(username, password string) (*oauth2.Token, error) {
+	ctx := context.Background()
 
 	// Use config credentials if provided, otherwise fallback to args or client credentials
 	user := username
@@ -88,69 +74,57 @@ func (c *Client) GetToken(username, password string) (*TokenResponse, error) {
 		pass = c.cfg.User.Password
 	}
 
+	var token *oauth2.Token
+	var err error
+
 	if user != "" && pass != "" {
 		log.Info().Str("grant_type", "password").Msg("Using Resource Owner Password Credentials flow")
-		data.Set("grant_type", "password")
-		data.Set("username", user)
-		data.Set("password", pass)
+		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, user, pass)
 	} else {
 		log.Info().Str("grant_type", "client_credentials").Msg("Using Client Credentials flow")
-		data.Set("grant_type", "client_credentials")
+		// For client credentials, we need to create a clientcredentials.Config
+		ccConfig := clientcredentials.Config{
+			ClientID:     c.oauth2Config.ClientID,
+			ClientSecret: c.oauth2Config.ClientSecret,
+			TokenURL:     c.oauth2Config.Endpoint.TokenURL,
+			Scopes:       c.oauth2Config.Scopes,
+			AuthStyle:    c.oauth2Config.Endpoint.AuthStyle,
+		}
+		// The clientcredentials.Config should use the http client set in the context
+		token, err = ccConfig.Token(ctx)
 	}
 
-	return c.makeTokenRequest(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	// Validate ID Token if present
+	if idTokenRaw, ok := token.Extra("id_token").(string); ok && idTokenRaw != "" {
+		verifier := c.provider.Verifier(&oidc.Config{ClientID: c.cfg.OIDC.ClientID})
+		idToken, err := verifier.Verify(ctx, idTokenRaw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify ID token: %w", err)
+		}
+		log.Debug().
+			Str("issuer", idToken.Issuer).
+			Str("subject", idToken.Subject).
+			Msg("ID Token validated successfully")
+	} else {
+		log.Debug().Msg("No ID Token found or provided in response")
+	}
+
+	return token, nil
 }
 
-func (c *Client) makeTokenRequest(data url.Values) (*TokenResponse, error) {
-	// Handle Auth Method
-	// Handle Auth Method
-	// Default to basic
-	// RFC 6749 says client_id in body is NOT RECOMMENDED for Basic Auth,
-	// but we'll leave it out to be strict.
-	// If the user wants it in body, they should use "post" or we'd need a "basic_with_body" option.
-	// For now, let's stick to strict Basic Auth.
-	if c.cfg.OIDC.AuthMethod == "post" {
-		data.Set("client_id", c.cfg.OIDC.ClientID)
-		data.Set("client_secret", c.cfg.OIDC.ClientSecret)
-	}
+// RefreshToken refreshes an expired token using the oauth2 library.
+// It takes the existing *oauth2.Token which must contain a valid RefreshToken.
+func (c *Client) RefreshToken(oldToken *oauth2.Token) (*oauth2.Token, error) {
+	ctx := context.Background()
 
-	log.Debug().
-		Str("endpoint", c.endpoints.TokenEndpoint).
-		Str("auth_method", c.cfg.OIDC.AuthMethod).
-		Str("grant_type", data.Get("grant_type")).
-		Msg("Making token request")
-
-	req, err := http.NewRequest("POST", c.endpoints.TokenEndpoint, strings.NewReader(data.Encode()))
+	tokenSource := c.oauth2Config.TokenSource(ctx, oldToken)
+	newToken, err := tokenSource.Token()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to refresh token: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	if c.cfg.OIDC.AuthMethod != "post" {
-		req.SetBasicAuth(c.cfg.OIDC.ClientID, c.cfg.OIDC.ClientSecret)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// Try to read body for error details
-		var errResp map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
-			log.Debug().Err(err).Msg("Failed to decode error response body")
-		}
-		log.Debug().Interface("error_response", errResp).Msg("Token request failed")
-		return nil, fmt.Errorf("token request returned status %d: %v", resp.StatusCode, errResp)
-	}
-
-	var tokenResp TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %w", err)
-	}
-
-	return &tokenResp, nil
+	return newToken, nil
 }

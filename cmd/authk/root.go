@@ -86,16 +86,18 @@ updating a .env file with the valid token.`,
 
 		// Maintenance Loop
 		for {
-			// Calculate sleep time (expires_in - 60s buffer)
-			sleepDuration := time.Duration(token.ExpiresIn-60) * time.Second
-			if sleepDuration < 10*time.Second {
+			// Calculate sleep time based on token expiry and a refresh buffer
+			refreshBuffer := 60 * time.Second // Refresh 60 seconds before expiry
+			sleepDuration := time.Until(token.Expiry) - refreshBuffer
+			if sleepDuration < 10*time.Second { // Ensure at least 10 seconds sleep
 				sleepDuration = 10 * time.Second
 			}
 
 			log.Info().Dur("sleep_duration", sleepDuration).Msg("Waiting for token refresh")
 			time.Sleep(sleepDuration)
 
-			newToken, err := client.RefreshToken(token.RefreshToken)
+			// Attempt to refresh the token
+			newToken, err := client.RefreshToken(token)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to refresh token, attempting full re-authentication")
 
@@ -107,7 +109,9 @@ updating a .env file with the valid token.`,
 					time.Sleep(10 * time.Second)
 
 					// Force short sleep on next iteration to retry quickly
-					token.ExpiresIn = 0
+					// By setting token.Expiry to now, time.Until will be negative,
+					// and sleepDuration will become 10s.
+					token.Expiry = time.Now()
 					continue
 				}
 			}
