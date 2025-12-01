@@ -135,6 +135,9 @@ Reads the current token from the `.env` file and displays its decoded content (H
 ./authk inspect
 ```
 
+**Flags:**
+- `--json`: Output as valid JSON without colors (useful for parsing)
+
 ## License
 
 MIT

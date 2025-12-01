@@ -1,0 +1,18 @@
+feat(inspect): Add --json flag and human-readable timestamps
+
+This commit introduces significant improvements to the `inspect` command:
+
+- **New Feature: `--json` flag**:
+  A new `--json` flag has been added to the `inspect` command, allowing users to output the decoded JWT header and payload as a valid, uncolored JSON object. This facilitates machine-readable output for scripting and integration with other tools.
+
+- **Human-readable Timestamps**:
+  The default (non-JSON) output now automatically converts common epoch timestamps (e.g., `exp`, `iat`, `nbf`, `auth_time`, `updated_at`) in the JWT payload to human-readable date and time strings, displayed alongside the original epoch value. This greatly enhances readability for quick inspections.
+
+- **Improved Readability for Dates**:
+  The human-readable date appended to epoch timestamps is now rendered in a fainter color to distinguish it from the primary numerical value, improving visual clarity.
+
+- **Documentation Updates**:
+  The `README.md` and the `inspect` command's `--help` text have been updated to reflect the new `--json` flag and the enhanced output format.
+
+- **Tests**:
+  Added a unit test for the `decodeSegment` helper function and ensured all existing tests pass with the new changes.

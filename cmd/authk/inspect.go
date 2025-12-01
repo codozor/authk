@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codozor/authk/internal/config"
 	"github.com/codozor/authk/internal/env"
@@ -12,10 +14,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var jsonOutput bool
+
 var inspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Inspect the current token",
-	Long:  `Read the token from the .env file and display its decoded content.`,
+	Long:  `Read the token from the .env file and display its decoded content. Use the --json flag for machine-readable output.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Try to find config file
 		if found, err := env.Find(cfgFile); err == nil {
@@ -48,6 +52,29 @@ var inspectCmd = &cobra.Command{
 			return fmt.Errorf("invalid token format: expected 3 parts, got %d", len(parts))
 		}
 
+		if jsonOutput {
+			header, err := decodeSegment(parts[0])
+			if err != nil {
+				return fmt.Errorf("failed to decode header: %w", err)
+			}
+			payload, err := decodeSegment(parts[1])
+			if err != nil {
+				return fmt.Errorf("failed to decode payload: %w", err)
+			}
+
+			output := map[string]interface{}{
+				"header":  header,
+				"payload": payload,
+			}
+
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(output); err != nil {
+				return fmt.Errorf("failed to encode output: %w", err)
+			}
+			return nil
+		}
+
 		printJSON("Header", parts[0])
 		printJSON("Payload", parts[1])
 
@@ -55,20 +82,27 @@ var inspectCmd = &cobra.Command{
 	},
 }
 
+func decodeSegment(segment string) (interface{}, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(segment)
+	if err != nil {
+		return nil, err
+	}
+
+	var obj interface{}
+	if err := json.Unmarshal(decoded, &obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 func printJSON(title, segment string) {
 	// Header style
 	headerStyle := color.New(color.FgCyan, color.Bold)
 	headerStyle.Printf("--- %s ---\n", title)
 
-	decoded, err := base64.RawURLEncoding.DecodeString(segment)
+	obj, err := decodeSegment(segment)
 	if err != nil {
 		fmt.Printf("Error decoding %s: %v\n", title, err)
-		return
-	}
-
-	var obj interface{}
-	if err := json.Unmarshal(decoded, &obj); err != nil {
-		fmt.Printf("Error unmarshaling %s: %v\n", title, err)
 		return
 	}
 
@@ -77,6 +111,7 @@ func printJSON(title, segment string) {
 		fmt.Printf("Error pretty printing %s: %v\n", title, err)
 		return
 	}
+
 
 	// Simple syntax highlighting for JSON keys
 	jsonStr := string(pretty)
@@ -96,6 +131,14 @@ func printJSON(title, segment string) {
 			// Colorize key
 			fmt.Print(keyColor(key))
 
+			// Check if it's a timestamp key
+			keyName := strings.Trim(parts[0], " \t\"")
+			isTimestamp := false
+			switch keyName {
+			case "exp", "iat", "nbf", "auth_time", "updated_at":
+				isTimestamp = true
+			}
+
 			// Try to colorize value
 			valTrimmed := strings.TrimSpace(parts[1])
 			if strings.HasPrefix(valTrimmed, "\"") {
@@ -107,7 +150,16 @@ func printJSON(title, segment string) {
 			} else {
 				// Assume number or object/array start
 				if strings.ContainsAny(valTrimmed, "0123456789") {
-					fmt.Println(numberColor(val))
+					fmt.Print(numberColor(val))
+
+					if isTimestamp {
+						cleanVal := strings.TrimSuffix(valTrimmed, ",")
+													if ts, err := strconv.ParseInt(cleanVal, 10, 64); err == nil {
+														tm := time.Unix(ts, 0)
+														dateColor := color.New(color.Faint).SprintFunc()
+														fmt.Print(dateColor(fmt.Sprintf(" (%s)", tm.Format("2006-01-02 15:04:05 MST"))))
+													}					}
+					fmt.Println()
 				} else {
 					fmt.Println(val)
 				}
@@ -121,4 +173,5 @@ func printJSON(title, segment string) {
 
 func init() {
 	rootCmd.AddCommand(inspectCmd)
+	inspectCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as valid JSON without colors")
 }
