@@ -4,10 +4,12 @@ go 1.25.4
 
 require (
 	cuelang.org/go v0.15.1
+	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/fatih/color v1.18.0
 	github.com/helmfile/vals v0.37.0
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.1
+	golang.org/x/oauth2 v0.33.0
 )
 
 require (
@@ -132,6 +134,7 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
