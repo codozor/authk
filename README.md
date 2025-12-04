@@ -93,6 +93,46 @@ oidc: {
 }
 ```
 
+## Secrets Management
+
+`authk` integrates with [vals](https://github.com/helmfile/vals) to support loading secrets securely from various sources. You can use special URI schemes in your configuration file to reference secrets instead of hardcoding them.
+
+Supported schemes:
+*   `ref+env://` - Environment variables
+*   `ref+file://` - File contents
+*   `ref+sops://` - Files encrypted with [SOPS](https://github.com/getsops/sops)
+*   `ref+k8s://` - Kubernetes Secrets
+
+### Examples
+
+**Environment Variables:**
+
+```cue
+oidc: {
+    // ...
+    clientSecret: "ref+env://OIDC_CLIENT_SECRET"
+}
+```
+
+**Kubernetes Secret:**
+
+```cue
+user: {
+    // ...
+    // format: ref+k8s://namespace/secret-name/json-key
+    password: "ref+k8s://default/my-secret/password"
+}
+```
+
+**File Content:**
+
+```cue
+oidc: {
+    // ...
+    clientSecret: "ref+file:///path/to/secret_file"
+}
+```
+
 ## File Discovery
 
 `authk` employs a smart discovery mechanism for both the configuration file (`authk.cue`) and the `.env` file. It searches in the following order:
