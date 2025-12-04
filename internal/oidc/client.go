@@ -35,9 +35,9 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	// Determine AuthStyle based on AuthMethod
 	var authStyle oauth2.AuthStyle
 	switch cfg.OIDC.AuthMethod {
-	case "client_secret_post":
+	case "client_secret_post", "post":
 		authStyle = oauth2.AuthStyleInParams
-	case "client_secret_basic", "": // Default to basic if not specified
+	case "client_secret_basic", "basic", "": // Default to basic if not specified
 		authStyle = oauth2.AuthStyleInHeader
 	default:
 		return nil, fmt.Errorf("unsupported auth method: %s", cfg.OIDC.AuthMethod)
