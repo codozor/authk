@@ -14,7 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var jsonOutput bool
+var (
+	jsonOutput bool
+	inspectID  bool
+)
 
 var inspectCmd = &cobra.Command{
 	Use:   "inspect",
@@ -37,8 +40,17 @@ var inspectCmd = &cobra.Command{
 			envFile = found
 		}
 
+		// Determine which key to use
+		key := cfg.TokenKey
+		if inspectID {
+			if cfg.IDTokenKey == "" {
+				return fmt.Errorf("idTokenKey not configured in config file")
+			}
+			key = cfg.IDTokenKey
+		}
+
 		// Initialize Env Manager
-		envMgr := env.NewManager(envFile, cfg.TokenKey)
+		envMgr := env.NewManager(envFile, key)
 
 		// Get Token
 		token, err := envMgr.Get()
@@ -112,7 +124,6 @@ func printJSON(title, segment string) {
 		return
 	}
 
-
 	// Simple syntax highlighting for JSON keys
 	jsonStr := string(pretty)
 	lines := strings.Split(jsonStr, "\n")
@@ -154,11 +165,12 @@ func printJSON(title, segment string) {
 
 					if isTimestamp {
 						cleanVal := strings.TrimSuffix(valTrimmed, ",")
-													if ts, err := strconv.ParseInt(cleanVal, 10, 64); err == nil {
-														tm := time.Unix(ts, 0)
-														dateColor := color.New(color.Faint).SprintFunc()
-														fmt.Print(dateColor(fmt.Sprintf(" (%s)", tm.Format("2006-01-02 15:04:05 MST"))))
-													}					}
+						if ts, err := strconv.ParseInt(cleanVal, 10, 64); err == nil {
+							tm := time.Unix(ts, 0)
+							dateColor := color.New(color.Faint).SprintFunc()
+							fmt.Print(dateColor(fmt.Sprintf(" (%s)", tm.Format("2006-01-02 15:04:05 MST"))))
+						}
+					}
 					fmt.Println()
 				} else {
 					fmt.Println(val)
@@ -174,4 +186,5 @@ func printJSON(title, segment string) {
 func init() {
 	rootCmd.AddCommand(inspectCmd)
 	inspectCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as valid JSON without colors")
+	inspectCmd.Flags().BoolVar(&inspectID, "id-token", false, "Inspect the ID token instead of the Access token")
 }

@@ -47,11 +47,11 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		ClientID:     cfg.OIDC.ClientID,
 		ClientSecret: cfg.OIDC.ClientSecret,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:     provider.Endpoint().AuthURL,
-			TokenURL:    provider.Endpoint().TokenURL,
+			AuthURL:   provider.Endpoint().AuthURL,
+			TokenURL:  provider.Endpoint().TokenURL,
 			AuthStyle: authStyle, // Set AuthStyle here
 		},
-		Scopes:       cfg.OIDC.Scopes,
+		Scopes: cfg.OIDC.Scopes,
 	}
 
 	return &Client{
@@ -103,12 +103,13 @@ func (c *Client) GetToken(username, password string) (*oauth2.Token, error) {
 		verifier := c.provider.Verifier(&oidc.Config{ClientID: c.cfg.OIDC.ClientID})
 		idToken, err := verifier.Verify(ctx, idTokenRaw)
 		if err != nil {
-			return nil, fmt.Errorf("failed to verify ID token: %w", err)
+			log.Warn().Err(err).Msg("failed to verify ID token")
+		} else {
+			log.Debug().
+				Str("issuer", idToken.Issuer).
+				Str("subject", idToken.Subject).
+				Msg("ID Token validated successfully")
 		}
-		log.Debug().
-			Str("issuer", idToken.Issuer).
-			Str("subject", idToken.Subject).
-			Msg("ID Token validated successfully")
 	} else {
 		log.Debug().Msg("No ID Token found or provided in response")
 	}

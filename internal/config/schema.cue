@@ -12,8 +12,10 @@ user: {
 	password?: string
 }
 tokenKey: string | *"TOKEN"
+idTokenKey?: string
 
 targets?: [...{
 	file: string
 	key:  string
+	idTokenKey?: string
 }]

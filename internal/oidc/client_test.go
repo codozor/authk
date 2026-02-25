@@ -1,9 +1,11 @@
 package oidc
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,11 +30,11 @@ func TestClient_GetToken(t *testing.T) {
 			// go-oidc requires an issuer that matches the discovery URL
 			// and a jwks_uri for ID token validation (even if we don't validate it in this test)
 			if err := json.NewEncoder(w).Encode(map[string]interface{}{
-				"issuer":           testServer.URL,
-				"token_endpoint":   testServer.URL + "/token",
-				"jwks_uri":         testServer.URL + "/certs", // Dummy JWKS URI
-				"response_types_supported": []string{"code"}, // Minimal required by go-oidc
-				"subject_types_supported": []string{"public"},
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs", // Dummy JWKS URI
+				"response_types_supported":              []string{"code"},          // Minimal required by go-oidc
+				"subject_types_supported":               []string{"public"},
 				"id_token_signing_alg_values_supported": []string{"RS256"},
 			}); err != nil {
 				t.Error(err)
@@ -155,6 +157,73 @@ func TestClient_GetToken_Password(t *testing.T) {
 	}
 }
 
+func TestClient_GetToken_IDToken(t *testing.T) {
+	// Mock OIDC Provider
+	var testServer *httptest.Server
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			}); err != nil {
+				t.Error(err)
+			}
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			// Create a 3-part "JWT" that might still fail verification but won't be "malformed"
+			header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+			payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"` + testServer.URL + `","sub":"user"}`))
+			signature := base64.RawURLEncoding.EncodeToString([]byte("sig"))
+			idToken := header + "." + payload + "." + signature
+			resp := mockTokenResponse{
+				AccessToken: "mock_access_token",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+				TokenType:   "Bearer",
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Error(err)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	testServer = httptest.NewServer(handler)
+	defer testServer.Close()
+
+	cfg := &config.Config{
+		OIDC: config.OIDCConfig{
+			IssuerURL:    testServer.URL,
+			ClientID:     "client",
+			ClientSecret: "secret",
+			AuthMethod:   "client_secret_basic",
+		},
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	token, err := client.GetToken("", "")
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+
+	idToken, ok := token.Extra("id_token").(string)
+	if !ok {
+		t.Fatal("expected id_token to be present in extra")
+	}
+	if !strings.HasPrefix(idToken, "eyJhbGciOiJub25lIn0") {
+		t.Errorf("expected id token to start with expected header, got %s", idToken)
+	}
+}
+
 func TestClient_RefreshToken(t *testing.T) {
 	var testServer *httptest.Server
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,11 +232,11 @@ func TestClient_RefreshToken(t *testing.T) {
 			// go-oidc requires an issuer that matches the discovery URL
 			// and a jwks_uri for ID token validation (even if we don't validate it in this test)
 			if err := json.NewEncoder(w).Encode(map[string]interface{}{
-				"issuer":           testServer.URL,
-				"token_endpoint":   testServer.URL + "/token",
-				"jwks_uri":         testServer.URL + "/certs", // Dummy JWKS URI
-				"response_types_supported": []string{"code"}, // Minimal required by go-oidc
-				"subject_types_supported": []string{"public"},
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs", // Dummy JWKS URI
+				"response_types_supported":              []string{"code"},          // Minimal required by go-oidc
+				"subject_types_supported":               []string{"public"},
 				"id_token_signing_alg_values_supported": []string{"RS256"},
 			}); err != nil {
 				t.Error(err)

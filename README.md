@@ -57,6 +57,9 @@ user: {
 
 // Optional: Key to update in .env (default: "TOKEN")
 tokenKey: "MY_TOKEN"
+
+// Optional: Key to update with ID Token in .env
+idTokenKey: "MY_ID_TOKEN"
 ```
 
 ## Configuration Examples
@@ -167,6 +170,9 @@ Fetches a valid token and prints it to stdout. Useful for piping to other comman
 ./authk get
 ```
 
+**Flags:**
+- `--id-token`: Print ID Token instead of Access Token
+
 ### Inspect Token
 
 Reads the current token from the `.env` file and displays its decoded content (Header and Payload).
@@ -176,6 +182,7 @@ Reads the current token from the `.env` file and displays its decoded content (H
 ```
 
 **Flags:**
+- `--id-token`: Inspect the ID token instead of the Access token
 - `--json`: Output as valid JSON without colors (useful for parsing)
 
 ## License
