@@ -59,12 +59,19 @@ updating a .env file with the valid token.`,
 			targets = cfg.Targets
 			log.Info().Int("count", len(targets)).Msg("Configured with multiple targets")
 		} else {
-			targets = []config.Target{{
-				File:       envFile,
-				Key:        cfg.TokenKey,
-				IDTokenKey: cfg.IDTokenKey,
-			}}
-			log.Info().Str("env_file", envFile).Str("token_key", cfg.TokenKey).Msg("Configured with single target")
+			targets = append(targets, config.Target{
+				File: envFile,
+				Key:  cfg.TokenKey,
+				Type: "access_token",
+			})
+			if cfg.IDTokenKey != "" {
+				targets = append(targets, config.Target{
+					File: envFile,
+					Key:  cfg.IDTokenKey,
+					Type: "id_token",
+				})
+			}
+			log.Info().Str("env_file", envFile).Msg("Configured with default targets")
 		}
 
 		// Initialize OIDC Client
@@ -82,26 +89,24 @@ updating a .env file with the valid token.`,
 		// Function to update all targets with current tokens
 		updateTargets := func(t *oauth2.Token) {
 			for _, target := range targets {
-				// Update Access Token
-				mgr := env.NewManager(target.File, target.Key)
-				if err := mgr.Update(t.AccessToken); err != nil {
-					log.Error().Err(err).Str("file", target.File).Msg("Failed to update Access Token")
-				} else {
-					log.Info().Str("file", target.File).Msg("Access Token updated")
+				var tokenValue string
+				switch target.Type {
+				case "id_token":
+					idToken, ok := t.Extra("id_token").(string)
+					if !ok || idToken == "" {
+						log.Warn().Str("file", target.File).Msg("ID Token requested but not found in response")
+						continue
+					}
+					tokenValue = idToken
+				default: // access_token
+					tokenValue = t.AccessToken
 				}
 
-				// Update ID Token if configured
-				if target.IDTokenKey != "" {
-					if idToken, ok := t.Extra("id_token").(string); ok && idToken != "" {
-						idMgr := env.NewManager(target.File, target.IDTokenKey)
-						if err := idMgr.Update(idToken); err != nil {
-							log.Error().Err(err).Str("file", target.File).Msg("Failed to update ID Token")
-						} else {
-							log.Info().Str("file", target.File).Msg("ID Token updated")
-						}
-					} else {
-						log.Warn().Str("file", target.File).Msg("ID Token configured but not found in response")
-					}
+				mgr := env.NewManager(target.File, target.Key)
+				if err := mgr.Update(tokenValue); err != nil {
+					log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
+				} else {
+					log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")
 				}
 			}
 		}

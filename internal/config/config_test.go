@@ -97,7 +97,8 @@ tokenKey: "MY_TOKEN"
 idTokenKey: "MY_ID_TOKEN"
 
 targets: [
-	{ file: ".env.1", key: "KEY1", idTokenKey: "ID1" },
+	{ file: ".env.1", key: "KEY1", type: "access_token" },
+	{ file: ".env.1", key: "ID1", type: "id_token" },
 	{ file: ".env.2", key: "KEY2" }
 ]
 `
@@ -119,14 +120,20 @@ targets: [
 		t.Errorf("expected IDTokenKey 'MY_ID_TOKEN', got %q", cfg.IDTokenKey)
 	}
 
-	if len(cfg.Targets) != 2 {
-		t.Errorf("expected 2 targets, got %d", len(cfg.Targets))
+	if len(cfg.Targets) != 3 {
+		t.Errorf("expected 3 targets, got %d", len(cfg.Targets))
 	}
 
-	if cfg.Targets[0].IDTokenKey != "ID1" {
-		t.Errorf("expected target 0 IDTokenKey 'ID1', got %q", cfg.Targets[0].IDTokenKey)
+	if cfg.Targets[0].Type != "access_token" {
+		t.Errorf("expected target 0 Type 'access_token', got %q", cfg.Targets[0].Type)
 	}
-	if cfg.Targets[1].IDTokenKey != "" {
-		t.Errorf("expected target 1 IDTokenKey '', got %q", cfg.Targets[1].IDTokenKey)
+	if cfg.Targets[1].Type != "id_token" {
+		t.Errorf("expected target 1 Type 'id_token', got %q", cfg.Targets[1].Type)
+	}
+	if cfg.Targets[1].Key != "ID1" {
+		t.Errorf("expected target 1 Key 'ID1', got %q", cfg.Targets[1].Key)
+	}
+	if cfg.Targets[2].Type != "access_token" {
+		t.Errorf("expected target 2 Type 'access_token' (default), got %q", cfg.Targets[2].Type)
 	}
 }

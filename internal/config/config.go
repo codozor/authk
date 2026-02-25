@@ -26,9 +26,9 @@ type Config struct {
 }
 
 type Target struct {
-	File       string `json:"file"`
-	Key        string `json:"key"`
-	IDTokenKey string `json:"idTokenKey,omitempty"`
+	File string `json:"file"`
+	Key  string `json:"key"`
+	Type string `json:"type"`
 }
 
 type OIDCConfig struct {

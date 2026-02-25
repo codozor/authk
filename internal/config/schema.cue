@@ -17,5 +17,5 @@ idTokenKey?: string
 targets?: [...{
 	file: string
 	key:  string
-	idTokenKey?: string
+	type: "access_token" | "id_token" | *"access_token"
 }]
