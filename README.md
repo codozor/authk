@@ -57,6 +57,9 @@ user: {
 
 // Optional: Key to update in .env (default: "TOKEN")
 tokenKey: "MY_TOKEN"
+
+// Optional: Key to update with ID Token in .env
+idTokenKey: "MY_ID_TOKEN"
 ```
 
 ## Configuration Examples
@@ -89,9 +92,33 @@ oidc: {
 	clientSecret: "my-client-secret"
 	scopes:       ["openid", "profile", "email", "goauthentik.io/api"]
 }
-	scopes:       ["openid", "profile", "email", "goauthentik.io/api"]
-}
 ```
+
+## Advanced Targets Configuration
+
+By default, `authk` updates a single `.env` file. For more complex setups, you can define multiple targets to update different files or keys with different token types.
+
+```cue
+// Optional: Multiple targets configuration
+targets: [
+    {
+        file: ".env"
+        key:  "MY_ACCESS_TOKEN"
+        type: "access_token" // Default type
+    },
+    {
+        file: ".env"
+        key:  "MY_ID_TOKEN"
+        type: "id_token"
+    },
+    {
+        file: "apps/frontend/.env"
+        key:  "API_TOKEN"
+    }
+]
+```
+
+When `targets` is defined, the global `tokenKey` and `idTokenKey` are ignored.
 
 ## Secrets Management
 
@@ -167,15 +194,20 @@ Fetches a valid token and prints it to stdout. Useful for piping to other comman
 ./authk get
 ```
 
+**Flags:**
+- `--id-token`: Print ID Token instead of Access Token
+
 ### Inspect Token
 
-Reads the current token from the `.env` file and displays its decoded content (Header and Payload).
+Reads the current token from the `.env` file and displays its decoded content (Header and Payload). It automatically uses the file and key defined in your `targets` if available.
 
 ```bash
 ./authk inspect
 ```
 
 **Flags:**
+- `--id-token`: Inspect the ID token instead of the Access token (searches for a target of type `id_token`)
+- `--env`: Path to .env file. If multiple targets exist for different files, use this to specify which one to inspect.
 - `--json`: Output as valid JSON without colors (useful for parsing)
 
 ## License

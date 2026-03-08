@@ -18,15 +18,17 @@ import (
 var schemaContent []byte
 
 type Config struct {
-	OIDC     OIDCConfig `json:"oidc"`
-	User     UserConfig `json:"user"`
-	TokenKey string     `json:"tokenKey"`
-	Targets  []Target   `json:"targets,omitempty"`
+	OIDC       OIDCConfig `json:"oidc"`
+	User       UserConfig `json:"user"`
+	TokenKey   string     `json:"tokenKey"`
+	IDTokenKey string     `json:"idTokenKey,omitempty"`
+	Targets    []Target   `json:"targets,omitempty"`
 }
 
 type Target struct {
 	File string `json:"file"`
 	Key  string `json:"key"`
+	Type string `json:"type"`
 }
 
 type OIDCConfig struct {

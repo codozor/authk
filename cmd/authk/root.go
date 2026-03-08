@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -58,8 +59,19 @@ updating a .env file with the valid token.`,
 			targets = cfg.Targets
 			log.Info().Int("count", len(targets)).Msg("Configured with multiple targets")
 		} else {
-			targets = []config.Target{{File: envFile, Key: cfg.TokenKey}}
-			log.Info().Str("env_file", envFile).Str("token_key", cfg.TokenKey).Msg("Configured with single target")
+			targets = append(targets, config.Target{
+				File: envFile,
+				Key:  cfg.TokenKey,
+				Type: "access_token",
+			})
+			if cfg.IDTokenKey != "" {
+				targets = append(targets, config.Target{
+					File: envFile,
+					Key:  cfg.IDTokenKey,
+					Type: "id_token",
+				})
+			}
+			log.Info().Str("env_file", envFile).Msg("Configured with default targets")
 		}
 
 		// Initialize OIDC Client
@@ -74,15 +86,33 @@ updating a .env file with the valid token.`,
 			return fmt.Errorf("failed to get initial token: %w", err)
 		}
 
-		// Update all targets
-		for _, target := range targets {
-			mgr := env.NewManager(target.File, target.Key)
-			if err := mgr.Update(token.AccessToken); err != nil {
-				log.Error().Err(err).Str("file", target.File).Msg("Failed to update target")
-			} else {
-				log.Info().Str("file", target.File).Msg("Target updated")
+		// Function to update all targets with current tokens
+		updateTargets := func(t *oauth2.Token) {
+			for _, target := range targets {
+				var tokenValue string
+				switch target.Type {
+				case "id_token":
+					idToken, ok := t.Extra("id_token").(string)
+					if !ok || idToken == "" {
+						log.Warn().Str("file", target.File).Msg("ID Token requested but not found in response")
+						continue
+					}
+					tokenValue = idToken
+				default: // access_token
+					tokenValue = t.AccessToken
+				}
+
+				mgr := env.NewManager(target.File, target.Key)
+				if err := mgr.Update(tokenValue); err != nil {
+					log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
+				} else {
+					log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")
+				}
 			}
 		}
+
+		// Initial update
+		updateTargets(token)
 
 		// Maintenance Loop
 		for {
@@ -116,18 +146,9 @@ updating a .env file with the valid token.`,
 				}
 			}
 
-			// Update token
+			// Update token and targets
 			token = newToken
-
-			// Update all targets
-			for _, target := range targets {
-				mgr := env.NewManager(target.File, target.Key)
-				if err := mgr.Update(token.AccessToken); err != nil {
-					log.Error().Err(err).Str("file", target.File).Msg("Failed to update target")
-				} else {
-					log.Info().Str("file", target.File).Msg("Target updated")
-				}
-			}
+			updateTargets(token)
 		}
 	},
 }

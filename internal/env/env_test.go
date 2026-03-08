@@ -71,7 +71,7 @@ func TestManager_Update(t *testing.T) {
 			envFile := filepath.Join(tmpDir, ".env")
 
 			if tt.initial != "" {
-				if err := os.WriteFile(envFile, []byte(tt.initial), 0644); err != nil {
+				if err := os.WriteFile(envFile, []byte(tt.initial), 0o644); err != nil {
 					t.Fatalf("failed to create initial .env: %v", err)
 				}
 			}
@@ -96,7 +96,7 @@ func TestManager_Update(t *testing.T) {
 func TestManager_Get(t *testing.T) {
 	tmpDir := t.TempDir()
 	envFile := filepath.Join(tmpDir, ".env")
-	err := os.WriteFile(envFile, []byte("KEY=VALUE\n"), 0644)
+	err := os.WriteFile(envFile, []byte("KEY=VALUE\n"), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,12 +120,12 @@ func TestManager_Get(t *testing.T) {
 func TestFind(t *testing.T) {
 	tmpDir := t.TempDir()
 	subdir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subdir, 0755); err != nil {
+	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	envFile := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envFile, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(envFile, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

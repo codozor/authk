@@ -11,6 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	showIDToken bool
+)
+
 var getCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Get a valid token",
@@ -43,11 +47,20 @@ var getCmd = &cobra.Command{
 			return fmt.Errorf("failed to get token: %w", err)
 		}
 
-		fmt.Println(token.AccessToken)
+		if showIDToken {
+			idToken, ok := token.Extra("id_token").(string)
+			if !ok || idToken == "" {
+				return fmt.Errorf("no ID Token found in response")
+			}
+			fmt.Println(idToken)
+		} else {
+			fmt.Println(token.AccessToken)
+		}
 		return nil
 	},
 }
 
 func init() {
+	getCmd.Flags().BoolVar(&showIDToken, "id-token", false, "Print ID Token instead of Access Token")
 	rootCmd.AddCommand(getCmd)
 }
