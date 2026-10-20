@@ -166,3 +166,30 @@ oidc: {
 		t.Errorf("expected authMethod 'none', got %q", cfg.OIDC.AuthMethod)
 	}
 }
+
+func TestLoad_Audience(t *testing.T) {
+	content := `
+package config
+
+oidc: {
+	issuerUrl: "https://example.com"
+	clientId: "client"
+	clientSecret: "secret"
+	audience: "https://api.example.com"
+}
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "authk_audience.cue")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.OIDC.Audience != "https://api.example.com" {
+		t.Errorf("expected audience 'https://api.example.com', got %q", cfg.OIDC.Audience)
+	}
+}

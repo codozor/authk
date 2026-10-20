@@ -47,6 +47,7 @@ oidc: {
 	clientSecret: "your-client-secret" // Optional, omit for a public client
 	// scopes: ["openid", "profile", "email"] // Optional, default shown
 	// authMethod: "basic" // Optional, "basic", "post" or "none" (public client), default is "basic"
+	// audience: "https://api.example.com" // Optional, sent as "audience" to the token endpoint
 }
 
 // Optional: For Resource Owner Password Credentials flow
@@ -78,6 +79,22 @@ oidc: {
 user: {
 	username: "myuser"
 	password: "mypassword"
+}
+```
+
+### Auth0
+
+Auth0 needs an `audience` (the API identifier) to issue a JWT access token.
+It is sent with both the Client Credentials and the Password flows.
+
+```cue
+package config
+
+oidc: {
+	issuerUrl:    "https://my-tenant.eu.auth0.com/"
+	clientId:     "my-client"
+	clientSecret: "my-secret"
+	audience:     "https://api.example.com"
 }
 ```
 
