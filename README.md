@@ -44,9 +44,9 @@ package config
 oidc: {
 	issuerUrl:    "https://your-oidc-provider.com"
 	clientId:     "your-client-id"
-	clientSecret: "your-client-secret"
+	clientSecret: "your-client-secret" // Optional, omit for a public client
 	// scopes: ["openid", "profile", "email"] // Optional, default shown
-	// authMethod: "basic" // Optional, "basic" or "post", default is "basic"
+	// authMethod: "basic" // Optional, "basic", "post" or "none" (public client), default is "basic"
 }
 
 // Optional: For Resource Owner Password Credentials flow
@@ -73,6 +73,28 @@ oidc: {
 	issuerUrl:    "https://keycloak.example.com/realms/myrealm"
 	clientId:     "my-client"
 	clientSecret: "my-secret"
+}
+
+user: {
+	username: "myuser"
+	password: "mypassword"
+}
+```
+
+### Keycloak (public client)
+
+For a Keycloak client with *Client authentication* turned off, omit `clientSecret`
+(or set `authMethod: "none"`). The `client_id` is then sent in the request body
+without secret. A public client cannot use the Client Credentials flow, so `user`
+credentials are required and *Direct access grants* must be enabled on the client.
+
+```cue
+package config
+
+oidc: {
+	issuerUrl:  "https://keycloak.example.com/realms/myrealm"
+	clientId:   "my-public-client"
+	authMethod: "none"
 }
 
 user: {

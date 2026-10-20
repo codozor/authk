@@ -18,6 +18,7 @@ type Client struct {
 	cfg          *config.Config
 	provider     *oidc.Provider
 	oauth2Config *oauth2.Config
+	public       bool
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
@@ -34,7 +35,10 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 	// Determine AuthStyle based on AuthMethod
 	var authStyle oauth2.AuthStyle
+	public := false
 	switch cfg.OIDC.AuthMethod {
+	case "none":
+		public = true
 	case "client_secret_post", "post":
 		authStyle = oauth2.AuthStyleInParams
 	case "client_secret_basic", "basic", "": // Default to basic if not specified
@@ -43,9 +47,26 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("unsupported auth method: %s", cfg.OIDC.AuthMethod)
 	}
 
+	// A client without secret is a public client (e.g. Keycloak "Client authentication: Off"):
+	// client_id is sent in the request body and no client_secret is sent.
+	if cfg.OIDC.ClientSecret == "" {
+		public = true
+	}
+	if public {
+		authStyle = oauth2.AuthStyleInParams
+		if cfg.OIDC.ClientSecret != "" {
+			log.Warn().Msg("authMethod is \"none\": ignoring configured clientSecret")
+		}
+	}
+
+	clientSecret := cfg.OIDC.ClientSecret
+	if public {
+		clientSecret = ""
+	}
+
 	oauth2Config := &oauth2.Config{
 		ClientID:     cfg.OIDC.ClientID,
-		ClientSecret: cfg.OIDC.ClientSecret,
+		ClientSecret: clientSecret,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   provider.Endpoint().AuthURL,
 			TokenURL:  provider.Endpoint().TokenURL,
@@ -58,6 +79,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		cfg:          cfg,
 		provider:     provider,
 		oauth2Config: oauth2Config,
+		public:       public,
 	}, nil
 }
 
@@ -80,6 +102,8 @@ func (c *Client) GetToken(username, password string) (*oauth2.Token, error) {
 	if user != "" && pass != "" {
 		log.Info().Str("grant_type", "password").Msg("Using Resource Owner Password Credentials flow")
 		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, user, pass)
+	} else if c.public {
+		return nil, fmt.Errorf("public client (no client secret) requires username and password: client_credentials flow is not available")
 	} else {
 		log.Info().Str("grant_type", "client_credentials").Msg("Using Client Credentials flow")
 		// For client credentials, we need to create a clientcredentials.Config

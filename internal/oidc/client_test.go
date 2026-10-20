@@ -305,3 +305,81 @@ func TestClient_RefreshToken(t *testing.T) {
 		t.Error("expected token expiry to be set")
 	}
 }
+
+func TestClient_GetToken_PublicClient(t *testing.T) {
+	// Mock OIDC Provider
+	var testServer *httptest.Server
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			}); err != nil {
+				t.Error(err)
+			}
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			// A public client must send client_id in the body, without secret nor Basic auth
+			if r.Header.Get("Authorization") != "" {
+				t.Errorf("unexpected Authorization header: %q", r.Header.Get("Authorization"))
+			}
+			if _, ok := r.PostForm["client_secret"]; ok {
+				t.Error("unexpected client_secret in request body")
+			}
+			if r.PostForm.Get("client_id") == "public-client" && r.Form.Get("grant_type") == "password" {
+				w.Header().Set("Content-Type", "application/json")
+				resp := mockTokenResponse{
+					AccessToken: "mock_public_access_token",
+					ExpiresIn:   3600,
+					TokenType:   "Bearer",
+				}
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
+					t.Error(err)
+				}
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	testServer = httptest.NewServer(handler)
+	defer testServer.Close()
+
+	for _, authMethod := range []string{"none", "basic"} {
+		t.Run(authMethod, func(t *testing.T) {
+			cfg := &config.Config{
+				OIDC: config.OIDCConfig{
+					IssuerURL:  testServer.URL,
+					ClientID:   "public-client",
+					AuthMethod: authMethod,
+				},
+			}
+
+			client, err := NewClient(cfg)
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			token, err := client.GetToken("testuser", "testpass")
+			if err != nil {
+				t.Fatalf("GetToken() error = %v", err)
+			}
+			if token.AccessToken != "mock_public_access_token" {
+				t.Errorf("expected access token 'mock_public_access_token', got %s", token.AccessToken)
+			}
+
+			// client_credentials is not possible without a secret
+			if _, err := client.GetToken("", ""); err == nil {
+				t.Error("expected error for public client without user credentials")
+			}
+		})
+	}
+}

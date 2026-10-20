@@ -137,3 +137,32 @@ targets: [
 		t.Errorf("expected target 2 Type 'access_token' (default), got %q", cfg.Targets[2].Type)
 	}
 }
+
+func TestLoad_PublicClient(t *testing.T) {
+	content := `
+package config
+
+oidc: {
+	issuerUrl: "https://example.com"
+	clientId: "public-client"
+	authMethod: "none"
+}
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "authk_public.cue")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.OIDC.ClientSecret != "" {
+		t.Errorf("expected empty clientSecret, got %q", cfg.OIDC.ClientSecret)
+	}
+	if cfg.OIDC.AuthMethod != "none" {
+		t.Errorf("expected authMethod 'none', got %q", cfg.OIDC.AuthMethod)
+	}
+}
