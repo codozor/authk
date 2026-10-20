@@ -37,6 +37,7 @@ type OIDCConfig struct {
 	ClientSecret string   `json:"clientSecret"`
 	Scopes       []string `json:"scopes"`
 	AuthMethod   string   `json:"authMethod"`
+	Audience     string   `json:"audience,omitempty"`
 }
 
 type UserConfig struct {

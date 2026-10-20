@@ -3,6 +3,7 @@ package oidc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -382,4 +383,130 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClient_GetToken_Audience(t *testing.T) {
+	// Mock OIDC Provider
+	var testServer *httptest.Server
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			}); err != nil {
+				t.Error(err)
+			}
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if r.PostForm.Get("audience") != "https://api.example.com" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"missing audience"}`))
+				return
+			}
+			// Client authentication must follow the configured auth method
+			clientID, clientSecret, basic := r.BasicAuth()
+			if !basic {
+				clientID, clientSecret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			resp := mockTokenResponse{
+				AccessToken:  r.Form.Get("grant_type") + ":" + clientID + ":" + clientSecret + ":" + r.PostForm.Get("scope"),
+				ExpiresIn:    3600,
+				TokenType:    "Bearer",
+				RefreshToken: "mock_refresh_token",
+				IDToken:      "not-a-jwt",
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				t.Error(err)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	testServer = httptest.NewServer(handler)
+	defer testServer.Close()
+
+	tests := []struct {
+		name         string
+		clientSecret string
+		authMethod   string
+		username     string
+		want         string
+	}{
+		{"client_credentials", "secret", "basic", "", "client_credentials:client:secret:openid profile"},
+		{"password basic", "secret", "basic", "testuser", "password:client:secret:openid profile"},
+		{"password post", "secret", "post", "testuser", "password:client:secret:openid profile"},
+		{"password public", "", "none", "testuser", "password:client::openid profile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				OIDC: config.OIDCConfig{
+					IssuerURL:    testServer.URL,
+					ClientID:     "client",
+					ClientSecret: tt.clientSecret,
+					AuthMethod:   tt.authMethod,
+					Scopes:       []string{"openid", "profile"},
+					Audience:     "https://api.example.com",
+				},
+			}
+
+			client, err := NewClient(cfg)
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			password := ""
+			if tt.username != "" {
+				password = "testpass"
+			}
+			token, err := client.GetToken(tt.username, password)
+			if err != nil {
+				t.Fatalf("GetToken() error = %v", err)
+			}
+			if token.AccessToken != tt.want {
+				t.Errorf("expected access token %q, got %q", tt.want, token.AccessToken)
+			}
+			if token.TokenType != "Bearer" {
+				t.Errorf("expected token type 'Bearer', got %s", token.TokenType)
+			}
+			if token.Expiry.IsZero() {
+				t.Error("expected token expiry to be set")
+			}
+			if token.Extra("id_token") != "not-a-jwt" {
+				t.Errorf("expected id_token in extra, got %v", token.Extra("id_token"))
+			}
+		})
+	}
+
+	t.Run("error response", func(t *testing.T) {
+		cfg := &config.Config{
+			OIDC: config.OIDCConfig{
+				IssuerURL:    testServer.URL,
+				ClientID:     "client",
+				ClientSecret: "secret",
+				Audience:     "https://other.example.com",
+			},
+		}
+		client, err := NewClient(cfg)
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+		_, err = client.GetToken("testuser", "testpass")
+		var retrieveErr *oauth2.RetrieveError
+		if !errors.As(err, &retrieveErr) {
+			t.Fatalf("expected *oauth2.RetrieveError, got %v", err)
+		}
+		if retrieveErr.ErrorCode != "access_denied" {
+			t.Errorf("expected error code 'access_denied', got %q", retrieveErr.ErrorCode)
+		}
+	})
 }

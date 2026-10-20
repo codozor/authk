@@ -6,6 +6,7 @@ oidc: {
 	clientSecret: string | *""
 	scopes:       [...string] | *["openid", "profile", "email"]
 	authMethod:   "basic" | "post" | "none" | *"basic"
+	audience?:    string
 }
 user: {
 	username?: string
