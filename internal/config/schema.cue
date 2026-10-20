@@ -3,9 +3,9 @@ package config
 oidc: {
 	issuerUrl:    string
 	clientId:     string
-	clientSecret: string
+	clientSecret: string | *""
 	scopes:       [...string] | *["openid", "profile", "email"]
-	authMethod:   "basic" | "post" | *"basic"
+	authMethod:   "basic" | "post" | "none" | *"basic"
 }
 user: {
 	username?: string
