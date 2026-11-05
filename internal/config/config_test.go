@@ -36,10 +36,11 @@ targets: [
 		t.Errorf("expected 2 targets, got %d", len(cfg.Targets))
 	}
 
-	if cfg.Targets[0].File != ".env.1" || cfg.Targets[0].Key != "KEY1" {
+	// Relative target files are resolved against the config file directory
+	if cfg.Targets[0].File != filepath.Join(tmpDir, ".env.1") || cfg.Targets[0].Key != "KEY1" {
 		t.Errorf("unexpected target 0: %+v", cfg.Targets[0])
 	}
-	if cfg.Targets[1].File != ".env.2" || cfg.Targets[1].Key != "KEY2" {
+	if cfg.Targets[1].File != filepath.Join(tmpDir, ".env.2") || cfg.Targets[1].Key != "KEY2" {
 		t.Errorf("unexpected target 1: %+v", cfg.Targets[1])
 	}
 }
@@ -164,5 +165,41 @@ oidc: {
 	}
 	if cfg.OIDC.AuthMethod != "none" {
 		t.Errorf("expected authMethod 'none', got %q", cfg.OIDC.AuthMethod)
+	}
+}
+
+func TestLoad_TargetPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	absTarget := filepath.Join(t.TempDir(), "abs.env")
+	content := `
+package config
+
+oidc: {
+	issuerUrl: "https://example.com"
+	clientId: "client"
+}
+
+targets: [
+	{ file: "apps/front/.env", key: "A" },
+	{ file: "` + filepath.ToSlash(absTarget) + `", key: "B" },
+]
+`
+	configFile := filepath.Join(tmpDir, "authk.cue")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	// Load from another working directory: paths must not depend on it
+	t.Chdir(t.TempDir())
+
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if want := filepath.Join(tmpDir, "apps", "front", ".env"); cfg.Targets[0].File != want {
+		t.Errorf("relative target = %s, want %s", cfg.Targets[0].File, want)
+	}
+	if cfg.Targets[1].File != filepath.FromSlash(absTarget) {
+		t.Errorf("absolute target = %s, want %s", cfg.Targets[1].File, absTarget)
 	}
 }

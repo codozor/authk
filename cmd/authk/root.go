@@ -3,7 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
 	"github.com/codozor/authk/internal/config"
 	"github.com/codozor/authk/internal/env"
@@ -29,29 +30,13 @@ updating a .env file with the valid token.`,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		printBanner()
+		setupLogger(zerolog.InfoLevel)
 
-		// Setup Logger with Pretty Print
-		logLevel := zerolog.InfoLevel
-		if debug {
-			logLevel = zerolog.DebugLevel
-		}
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(logLevel)
-
-		// Try to find config file
-		if found, err := env.Find(cfgFile); err == nil {
-			cfgFile = found
-		}
-
-		// Load Config
-		cfg, err := config.Load(cfgFile)
+		cfg, err := loadConfig()
 		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
+			return err
 		}
-
-		// Try to find .env file
-		if found, err := env.Find(envFile); err == nil {
-			envFile = found
-		}
+		resolveEnvFile()
 
 		// Prepare targets
 		var targets []config.Target
@@ -74,6 +59,10 @@ updating a .env file with the valid token.`,
 			log.Info().Str("env_file", envFile).Msg("Configured with default targets")
 		}
 
+		// Stop cleanly on Ctrl+C / SIGTERM
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		// Initialize OIDC Client
 		client, err := oidc.NewClient(cfg)
 		if err != nil {
@@ -81,76 +70,44 @@ updating a .env file with the valid token.`,
 		}
 
 		// Initial Token Retrieval
-		token, err := client.GetToken("", "")
+		token, err := client.GetToken(ctx, "", "")
 		if err != nil {
 			return fmt.Errorf("failed to get initial token: %w", err)
 		}
 
-		// Function to update all targets with current tokens
-		updateTargets := func(t *oauth2.Token) {
-			for _, target := range targets {
-				var tokenValue string
-				switch target.Type {
-				case "id_token":
-					idToken, ok := t.Extra("id_token").(string)
-					if !ok || idToken == "" {
-						log.Warn().Str("file", target.File).Msg("ID Token requested but not found in response")
-						continue
-					}
-					tokenValue = idToken
-				default: // access_token
-					tokenValue = t.AccessToken
-				}
+		updateTargets(targets, token)
 
-				mgr := env.NewManager(target.File, target.Key)
-				if err := mgr.Update(tokenValue); err != nil {
-					log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
-				} else {
-					log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")
-				}
-			}
+		if err := newRefresher(client, func(t *oauth2.Token) { updateTargets(targets, t) }).run(ctx, token); err != nil {
+			return err
 		}
-
-		// Initial update
-		updateTargets(token)
-
-		// Maintenance Loop
-		for {
-			// Calculate sleep time based on token expiry and a refresh buffer
-			refreshBuffer := 60 * time.Second // Refresh 60 seconds before expiry
-			sleepDuration := time.Until(token.Expiry) - refreshBuffer
-			if sleepDuration < 10*time.Second { // Ensure at least 10 seconds sleep
-				sleepDuration = 10 * time.Second
-			}
-
-			log.Info().Dur("sleep_duration", sleepDuration).Msg("Waiting for token refresh")
-			time.Sleep(sleepDuration)
-
-			// Attempt to refresh the token
-			newToken, err := client.RefreshToken(token)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to refresh token, attempting full re-authentication")
-
-				// Try full re-authentication
-				newToken, err = client.GetToken("", "")
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to re-authenticate")
-					// Retry after short delay
-					time.Sleep(10 * time.Second)
-
-					// Force short sleep on next iteration to retry quickly
-					// By setting token.Expiry to now, time.Until will be negative,
-					// and sleepDuration will become 10s.
-					token.Expiry = time.Now()
-					continue
-				}
-			}
-
-			// Update token and targets
-			token = newToken
-			updateTargets(token)
-		}
+		log.Info().Msg("Shutting down")
+		return nil
 	},
+}
+
+// updateTargets writes the current tokens to every target.
+func updateTargets(targets []config.Target, t *oauth2.Token) {
+	for _, target := range targets {
+		var tokenValue string
+		switch target.Type {
+		case "id_token":
+			idToken, ok := t.Extra("id_token").(string)
+			if !ok || idToken == "" {
+				log.Warn().Str("file", target.File).Msg("ID Token requested but not found in response")
+				continue
+			}
+			tokenValue = idToken
+		default: // access_token
+			tokenValue = t.AccessToken
+		}
+
+		mgr := env.NewManager(target.File, target.Key)
+		if err := mgr.Update(tokenValue); err != nil {
+			log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
+		} else {
+			log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")
+		}
+	}
 }
 
 func printBanner() {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"cuelang.org/go/cue/cuecontext"
@@ -103,7 +104,29 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
 
+	if err := cfg.resolveTargetPaths(path); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// resolveTargetPaths makes relative target files relative to the config file directory,
+// so that running authk from a subdirectory updates the same files.
+func (c *Config) resolveTargetPaths(configPath string) error {
+	absConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve config path: %w", err)
+	}
+	baseDir := filepath.Dir(absConfig)
+	for i, t := range c.Targets {
+		if filepath.IsAbs(t.File) {
+			c.Targets[i].File = filepath.Clean(t.File)
+		} else {
+			c.Targets[i].File = filepath.Join(baseDir, t.File)
+		}
+	}
+	return nil
 }
 
 func processEnvRefs(v interface{}) error {

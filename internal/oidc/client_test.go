@@ -1,8 +1,10 @@
 package oidc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,7 +79,7 @@ func TestClient_GetToken(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken("", "")
+	token, err := client.GetToken(context.Background(), "", "")
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -147,7 +149,7 @@ func TestClient_GetToken_Password(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken("testuser", "testpass")
+	token, err := client.GetToken(context.Background(), "testuser", "testpass")
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -210,7 +212,7 @@ func TestClient_GetToken_IDToken(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken("", "")
+	token, err := client.GetToken(context.Background(), "", "")
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -290,7 +292,7 @@ func TestClient_RefreshToken(t *testing.T) {
 		Expiry:       time.Now().Add(-1 * time.Hour), // Expired to force refresh
 	}
 
-	token, err := client.RefreshToken(oldToken)
+	token, err := client.RefreshToken(context.Background(), oldToken)
 	if err != nil {
 		t.Fatalf("RefreshToken() error = %v", err)
 	}
@@ -368,7 +370,7 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 				t.Fatalf("NewClient() error = %v", err)
 			}
 
-			token, err := client.GetToken("testuser", "testpass")
+			token, err := client.GetToken(context.Background(), "testuser", "testpass")
 			if err != nil {
 				t.Fatalf("GetToken() error = %v", err)
 			}
@@ -377,9 +379,105 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 			}
 
 			// client_credentials is not possible without a secret
-			if _, err := client.GetToken("", ""); err == nil {
+			if _, err := client.GetToken(context.Background(), "", ""); err == nil {
 				t.Error("expected error for public client without user credentials")
 			}
 		})
+	}
+}
+
+// newRefreshTestServer serves discovery and a refresh_token grant that returns a new token.
+func newRefreshTestServer(t *testing.T, calls *int) *httptest.Server {
+	t.Helper()
+	var testServer *httptest.Server
+	testServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"issuer":                                testServer.URL,
+				"token_endpoint":                        testServer.URL + "/token",
+				"jwks_uri":                              testServer.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			}); err != nil {
+				t.Error(err)
+			}
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "valid_refresh" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			*calls++
+			w.Header().Set("Content-Type", "application/json")
+			// No refresh_token in the response: the old one must be kept
+			if err := json.NewEncoder(w).Encode(mockTokenResponse{
+				AccessToken: "new_access_token",
+				ExpiresIn:   3600,
+				TokenType:   "Bearer",
+			}); err != nil {
+				t.Error(err)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(testServer.Close)
+	return testServer
+}
+
+func TestClient_RefreshToken_StillValidToken(t *testing.T) {
+	calls := 0
+	srv := newRefreshTestServer(t, &calls)
+
+	client, err := NewClient(&config.Config{OIDC: config.OIDCConfig{
+		IssuerURL: srv.URL, ClientID: "client", ClientSecret: "secret",
+	}})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	// Still valid for 30s: the refresh must happen anyway (refresh buffer is 60s)
+	oldToken := &oauth2.Token{
+		AccessToken:  "old_access_token",
+		RefreshToken: "valid_refresh",
+		Expiry:       time.Now().Add(30 * time.Second),
+	}
+
+	token, err := client.RefreshToken(context.Background(), oldToken)
+	if err != nil {
+		t.Fatalf("RefreshToken() error = %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call to the token endpoint, got %d", calls)
+	}
+	if token.AccessToken != "new_access_token" {
+		t.Errorf("expected a new access token, got %s", token.AccessToken)
+	}
+	if token.RefreshToken != "valid_refresh" {
+		t.Errorf("expected the refresh token to be kept, got %q", token.RefreshToken)
+	}
+}
+
+func TestClient_RefreshToken_NoRefreshToken(t *testing.T) {
+	calls := 0
+	srv := newRefreshTestServer(t, &calls)
+
+	client, err := NewClient(&config.Config{OIDC: config.OIDCConfig{
+		IssuerURL: srv.URL, ClientID: "client", ClientSecret: "secret",
+	}})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.RefreshToken(context.Background(), &oauth2.Token{AccessToken: "a"})
+	if !errors.Is(err, ErrNoRefreshToken) {
+		t.Fatalf("expected ErrNoRefreshToken, got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("expected no call to the token endpoint, got %d", calls)
 	}
 }

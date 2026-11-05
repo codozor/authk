@@ -122,20 +122,59 @@ func (m *Manager) readLines() ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func (m *Manager) writeLines(lines []string) error {
-	file, err := os.Create(m.filePath)
-	if err != nil {
-		return fmt.Errorf("failed to create/open .env file: %w", err)
-	}
-	defer file.Close()
+// newFileMode is the permission of a .env file created by authk: it holds a token.
+const newFileMode os.FileMode = 0o600
 
-	writer := bufio.NewWriter(file)
+// writeLines replaces the file atomically (temp file + rename) so that readers never
+// see a truncated file. An existing file keeps its permissions; a new one gets 0600.
+// A symlink is followed, so the link itself is preserved.
+func (m *Manager) writeLines(lines []string) error {
+	path := m.filePath
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+
+	mode := newFileMode
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".authk-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary .env file: %w", err)
+	}
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	writer := bufio.NewWriter(tmp)
 	for _, line := range lines {
 		if _, err := writer.WriteString(line + "\n"); err != nil {
 			return err
 		}
 	}
-	return writer.Flush()
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		return fmt.Errorf("failed to set .env file permissions: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("failed to replace .env file: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // Find searches for the given filename in the current directory and parent directories.

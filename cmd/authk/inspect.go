@@ -4,11 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/codozor/authk/internal/config"
 	"github.com/codozor/authk/internal/env"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -24,21 +24,11 @@ var inspectCmd = &cobra.Command{
 	Short: "Inspect the current token",
 	Long:  `Read the token from the .env file and display its decoded content. Use the --json flag for machine-readable output.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Try to find config file
-		if found, err := env.Find(cfgFile); err == nil {
-			cfgFile = found
-		}
-
-		// Load Config
-		cfg, err := config.Load(cfgFile)
+		cfg, err := loadConfig()
 		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
+			return err
 		}
-
-		// Try to find .env file
-		if found, err := env.Find(envFile); err == nil {
-			envFile = found
-		}
+		resolveEnvFile()
 
 		// Determine which file and key to use
 		targetFile := envFile
@@ -52,8 +42,13 @@ var inspectCmd = &cobra.Command{
 		found := false
 		// 1. If --env is explicitly provided, try to find a target matching that file and type
 		if cmd.Flags().Changed("env") {
+			// Target files are absolute (resolved against the config dir): compare absolute paths
+			wanted, err := filepath.Abs(envFile)
+			if err != nil {
+				return fmt.Errorf("failed to resolve env file path: %w", err)
+			}
 			for _, t := range cfg.Targets {
-				if t.File == envFile && t.Type == requestedType {
+				if t.File == wanted && t.Type == requestedType {
 					targetKey = t.Key
 					found = true
 					break
