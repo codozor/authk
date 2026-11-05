@@ -29,6 +29,15 @@ func shortSocket(t *testing.T) string {
 	return filepath.Join(dir, "a.sock")
 }
 
+// serveOn listens on socket and serves r until ctx is cancelled.
+func serveOn(ctx context.Context, socket string, r *Refresher, info Info, stop func()) error {
+	ln, err := Listen(socket)
+	if err != nil {
+		return err
+	}
+	return Serve(ctx, ln, r, info, stop)
+}
+
 // startAgent serves r on a new socket until the test ends.
 func startAgent(t *testing.T, r *Refresher) (*Client, *atomic.Bool) {
 	t.Helper()
@@ -37,7 +46,7 @@ func startAgent(t *testing.T, r *Refresher) (*Client, *atomic.Bool) {
 	stopped := &atomic.Bool{}
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, socket, r, Info{ConfigPath: "/x/authk.cue", Issuer: "https://idp", ClientID: "cli"}, func() {
+		done <- serveOn(ctx, socket, r, Info{ConfigPath: "/x/authk.cue", Issuer: "https://idp", ClientID: "cli"}, func() {
 			stopped.Store(true)
 			cancel()
 		})
@@ -173,7 +182,7 @@ func TestServer_AlreadyRunning(t *testing.T) {
 	r := NewRefresher(fc, tokenWithID("a", "", time.Hour), nil)
 	client, _ := startAgent(t, r)
 
-	err := Serve(context.Background(), client.socket, r, Info{}, func() {})
+	err := serveOn(context.Background(), client.socket, r, Info{}, func() {})
 	if !errors.Is(err, ErrAlreadyRunning) {
 		t.Errorf("expected ErrAlreadyRunning, got %v", err)
 	}
@@ -203,7 +212,7 @@ func TestClient_NotRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, socket, NewRefresher(fc, tokenWithID("a", "", time.Hour), nil), Info{}, cancel)
+		done <- serveOn(ctx, socket, NewRefresher(fc, tokenWithID("a", "", time.Hour), nil), Info{}, cancel)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -221,25 +230,32 @@ func TestClient_NotRunning(t *testing.T) {
 	}
 }
 
-func TestSocketPath(t *testing.T) {
+func TestIDAndSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv(SocketEnv, "")
 
-	a1, err := SocketPath("/projects/a/authk.cue")
-	if err != nil {
-		t.Fatal(err)
+	a := ID("/projects/a/authk.cue", "", "")
+	if a != ID("/projects/a/authk.cue", "", "") {
+		t.Error("ID must be stable")
 	}
-	a2, _ := SocketPath("/projects/a/authk.cue")
-	b, _ := SocketPath("/projects/b/authk.cue")
-	if a1 != a2 || a1 == b {
-		t.Errorf("socket must be stable per config and differ between configs: %s %s %s", a1, a2, b)
+	if a == ID("/projects/b/authk.cue", "", "") {
+		t.Error("configs must give different IDs")
 	}
-	if filepath.Dir(a1) != filepath.Join("/run/user/1000", "authk") {
-		t.Errorf("unexpected socket dir %s", a1)
+	front := ID("/projects/a/authk.cue", "/projects/a/front/.env", "")
+	back := ID("/projects/a/authk.cue", "/projects/a/back/.env", "")
+	if front == back || !strings.HasPrefix(front, a+"-") {
+		t.Errorf("env files must give different IDs sharing the config prefix: %s %s %s", a, front, back)
+	}
+	if ID("/projects/a/authk.cue", "", "/custom.sock") == a {
+		t.Error("a custom socket must give a different ID")
 	}
 
+	if got, want := SocketFor(a), filepath.Join("/run/user/1000", "authk", a+".sock"); got != want {
+		t.Errorf("SocketFor() = %s, want %s", got, want)
+	}
 	t.Setenv(SocketEnv, "/custom.sock")
-	if p, _ := SocketPath("/projects/a/authk.cue"); p != "/custom.sock" {
-		t.Errorf("%s must override the path, got %s", SocketEnv, p)
+	if got := SocketFor(a); got != "/custom.sock" {
+		t.Errorf("%s must override the socket, got %s", SocketEnv, got)
 	}
 }
 
@@ -254,7 +270,7 @@ func TestEnsureSocketDir_RejectsSharedDir(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureSocketDir(filepath.Join(dir, "a.sock")); err == nil {
+	if err := ensurePrivateDir(dir); err == nil {
 		t.Error("a directory readable by others must be rejected")
 	}
 }

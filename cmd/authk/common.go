@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -9,14 +10,17 @@ import (
 	"github.com/codozor/authk/internal/env"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/term"
 )
 
-// setupLogger configures the global logger on stderr. --debug overrides the given level.
+// setupLogger configures the global logger on stderr, without colors when stderr is
+// not a terminal (detached agent writing to a log file). --debug overrides the level.
 func setupLogger(level zerolog.Level) {
 	if debug {
 		level = zerolog.DebugLevel
 	}
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).Level(level)
+	noColor := !term.IsTerminal(int(os.Stderr.Fd()))
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: noColor}).Level(level)
 }
 
 // findConfig looks for the config file in the current directory, its parents and the
@@ -38,20 +42,53 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// resolveEnvFile looks for the .env file in the current directory, its parents and the
-// home directory. If it is not found, the flag value is kept as is.
+// resolveEnvFile sets envFile to the absolute path of the .env file to use with the
+// config file (see env.ResolveEnvFile). findConfig must have been called.
 func resolveEnvFile() {
-	if found, err := env.Find(envFile); err == nil {
-		envFile = found
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	home, _ := os.UserHomeDir()
+	if resolved, err := env.ResolveEnvFile(envFile, cfgFile, cwd, home); err == nil {
+		envFile = resolved
 	}
 }
 
-// agentClient returns a client for the agent serving the config file.
-func agentClient() (*agent.Client, error) {
+// agentForContext returns a client for the agent serving the config and .env files
+// found from the current directory, or for AUTHK_SOCK if set. It returns an error
+// wrapping agent.ErrNotRunning if there is none.
+func agentForContext(ctx context.Context) (*agent.Client, error) {
+	if socket := os.Getenv(agent.SocketEnv); socket != "" {
+		return agent.NewClient(socket), nil
+	}
+
 	findConfig()
-	socket, err := agent.SocketPath(cfgFile)
+	resolveEnvFile()
+	configPath, err := agent.CanonicalPath(cfgFile)
 	if err != nil {
 		return nil, err
 	}
-	return agent.NewClient(socket), nil
+	envPath, err := agent.CanonicalPath(envFile)
+	if err != nil {
+		return nil, err
+	}
+	a, err := agent.Find(ctx, configPath, envPath)
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewClient(a.Socket), nil
+}
+
+// selectAgent returns a client for the agent whose ID starts with args[0], or for the
+// agent of the current context without argument.
+func selectAgent(ctx context.Context, args []string) (*agent.Client, error) {
+	if len(args) == 0 {
+		return agentForContext(ctx)
+	}
+	a, err := agent.FindByID(ctx, args[0])
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewClient(a.Socket), nil
 }

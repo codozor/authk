@@ -88,11 +88,14 @@ actually read. Use the --json flag for machine-readable output.`,
 // runs, the .env file otherwise or when asked to (--from-env, or --env given).
 func currentToken(cmd *cobra.Command, requestedType string) (token, source string, err error) {
 	if !inspectFromEnv && !cmd.Flags().Changed("env") {
-		client, err := agentClient()
-		if err != nil {
+		client, err := agentForContext(cmd.Context())
+		if err != nil && !isNotRunning(err) {
 			return "", "", err
 		}
-		resp, err := client.Token(cmd.Context(), requestedType, 0)
+		var resp *agent.TokenResponse
+		if err == nil {
+			resp, err = client.Token(cmd.Context(), requestedType, 0)
+		}
 		if err == nil {
 			return resp.Token, sourceAgent, nil
 		}

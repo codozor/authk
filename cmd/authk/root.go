@@ -26,7 +26,7 @@ does the same but is deprecated.`,
 	Args:          cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(os.Stderr, `Warning: running authk without a command is deprecated, use "authk agent"`)
-		return runAgent(cmd.Context())
+		return runAgent(cmd.Context(), cmd.Flags().Changed("env"))
 	},
 }
 

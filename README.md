@@ -188,14 +188,22 @@ oidc: {
 
 ## File Discovery
 
-`authk` employs a smart discovery mechanism for both the configuration file (`authk.cue`) and the `.env` file. It searches in the following order:
+The configuration file (`authk.cue`) is searched in the following order:
 
-1.  **Explicit Path**: If provided via flags (`--config`, `--env`).
+1.  **Explicit Path**: If provided via `--config`.
 2.  **Current Directory**: Checks the current working directory.
 3.  **Parent Directories**: Walks up the directory tree to the root.
 4.  **Home Directory**: Checks the user's home directory (`$HOME`).
 
 This allows you to run `authk` from any subdirectory within your project or rely on a global configuration in your home directory.
+
+When the config has no `targets`, the `.env` file is found as follows:
+
+- **Explicit path** (`--env front/.env`): used as is, relative to the current directory.
+- **Project config** (not in the home directory root): searched from the current directory up to the config directory, never above. If none is found, it is created next to the config.
+- **Global config** (`~/authk.cue`): searched from the current directory up to, but excluding, the home directory. If none is found, it is created in the current directory.
+
+`~/.env` is never used implicitly: a project without `.env` must not write its token there, nor share it with every other project.
 
 ## Usage
 
@@ -204,24 +212,43 @@ This allows you to run `authk` from any subdirectory within your project or rely
 This is the main mode. The agent fetches a token, updates the `.env` file (or the configured targets), and keeps running to renew the token before it expires. It stops cleanly on `Ctrl+C` or `SIGTERM`.
 
 ```bash
-./authk agent --env .env
+./authk agent             # in the foreground
+./authk agent --detach    # in the background (-d)
 ```
 
 While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
 
-One agent runs per config file. Its socket lives in `$XDG_RUNTIME_DIR/authk/` (or a private directory in the system temp dir); set `AUTHK_SOCK` to use a specific path.
+An agent serves one config file, and one `.env` file when the config has no `targets` (`--env` is ignored, with a warning, when the config defines `targets`). Several agents can run at the same time; a second agent for the same files is refused.
 
 ```bash
-./authk agent status    # show the agent state (--json available)
-./authk agent refresh   # renew the token now
-./authk agent stop      # stop the agent
+./authk agent list          # list running agents (alias: ls, --json available)
+./authk agent status [ID]   # show an agent state (--json available)
+./authk agent refresh [ID]  # renew the token now
+./authk agent logs [ID] -f  # follow the logs of a detached agent
+./authk agent stop [ID]     # stop an agent
+./authk agent stop --all    # stop every agent
 ```
 
-> Running `authk` without a command still starts the agent, but is deprecated.
+Without ID, these commands act on the agent serving the current directory. An ID prefix is enough, as with Docker.
+
+```
+$ authk agent list
+ID                 PID    STARTED           TOKEN  MODE        CONFIG                 WRITES
+281028a4-b3def358  31337  2026-11-06 09:12  4m12s  detached    ~/dev/app/authk.cue    ~/dev/app/front/.env
+281028a4-05a23f95  31420  2026-11-06 09:13  4m30s  detached    ~/dev/app/authk.cue    ~/dev/app/back/.env
+d4a4eba5           31502  2026-11-06 09:30  1m58s  foreground  ~/dev/other/authk.cue  ~/dev/other/out/.env
+```
+
+`--detach` returns once the agent has its first token, or prints its log if it fails to start. Logs of detached agents are written to `$XDG_STATE_HOME/authk/logs` (default `~/.local/state/authk/logs`) and kept 7 days.
+
+Sockets and registrations live in `$XDG_RUNTIME_DIR/authk/` (or a private directory in the system temp dir); set `AUTHK_SOCK` to use a specific socket path.
+
+> Running `authk` without a command still starts the agent in the foreground, but is deprecated.
 
 **Flags:**
 - `--config`: Path to config file (default: `authk.cue`)
-- `--env`: Path to .env file (default: `.env`)
+- `--env`: Path to .env file (default: `.env`), when the config has no `targets`
+- `--detach`, `-d`: Run in the background
 - `--debug`: Enable debug logging
 
 ### Get Token (One-off)
@@ -233,7 +260,9 @@ Prints a valid token to stdout. Useful for piping to other commands.
 curl -H "Authorization: Bearer $(./authk get)" https://api.example.com
 ```
 
-If an agent runs, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
+If an agent serves the config, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
+
+When several agents serve the config (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent.
 
 **Flags:**
 - `--id-token`: Print ID Token instead of Access Token

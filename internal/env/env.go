@@ -215,3 +215,79 @@ func Find(name string) (string, error) {
 
 	return "", fmt.Errorf("%s not found", name)
 }
+
+// ResolveEnvFile returns the absolute path of the .env file to use with the config file
+// configPath, searching from the directory cwd. name is the --env value.
+//
+//   - A name with a directory part is used as is, relative to cwd.
+//   - Project config (outside the home directory root): the file is searched from cwd up
+//     to the config directory, never above; if not found, it goes next to the config.
+//   - Global config (in the home directory root): the file is searched from cwd up to,
+//     but excluding, the home directory; if not found, it goes in cwd.
+//
+// The home directory itself is never searched: a project without .env must not write
+// its token to ~/.env, nor share it with every other project.
+func ResolveEnvFile(name, configPath, cwd, home string) (string, error) {
+	if filepath.IsAbs(name) {
+		return filepath.Clean(name), nil
+	}
+	if strings.ContainsRune(name, os.PathSeparator) || strings.ContainsRune(name, '/') {
+		return filepath.Join(cwd, name), nil
+	}
+
+	absConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		return "", err
+	}
+	configDir := filepath.Dir(absConfig)
+	cwd = filepath.Clean(cwd)
+	home = filepath.Clean(home)
+
+	if home == "" || home == "." || configDir != home {
+		// Project config
+		if isWithin(cwd, configDir) {
+			if found, ok := searchUp(name, cwd, configDir, true); ok {
+				return found, nil
+			}
+		}
+		return filepath.Join(configDir, name), nil
+	}
+
+	// Global config
+	if found, ok := searchUp(name, cwd, home, false); ok {
+		return found, nil
+	}
+	return filepath.Join(cwd, name), nil
+}
+
+// searchUp looks for name from dir up to stop (included if inclusive), or up to the
+// filesystem root if dir is not within stop.
+func searchUp(name, dir, stop string, inclusive bool) (string, bool) {
+	bounded := isWithin(dir, stop)
+	for {
+		if bounded && dir == stop && !inclusive {
+			return "", false
+		}
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+		if bounded && dir == stop {
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// isWithin reports whether path is dir or one of its subdirectories.
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}

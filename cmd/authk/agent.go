@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -23,28 +24,42 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var statusJSON bool
+var (
+	statusJSON  bool
+	stopAll     bool
+	agentDetach bool
+)
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Keep the token valid and serve it to other commands",
-	Long: `Run in the foreground: fetch a token, write it to the configured targets and renew it
-before it expires. While it runs, "authk get" and "authk inspect" use its current token
-through a local socket instead of authenticating again.
+	Long: `Fetch a token, write it to the configured targets and renew it before it expires.
+While it runs, "authk get" and "authk inspect" use its current token through a local
+socket instead of authenticating again.
 
-One agent runs per config file. Set AUTHK_SOCK to use a specific socket path.`,
+An agent serves one config file (and one .env file when the config has no targets).
+Several agents can run at the same time: "authk agent list" shows them. Set AUTHK_SOCK
+to use a specific socket path.
+
+With --detach, the agent runs in the background and logs to a file
+("authk agent logs").`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runAgent(cmd.Context())
+		if agentDetach && !isDetachedChild() {
+			return detachAgent(cmd)
+		}
+		return runAgent(cmd.Context(), cmd.Flags().Changed("env"))
 	},
 }
 
 var agentStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show the status of the agent",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		client, err := agentClient()
+	Use:   "status [ID]",
+	Short: "Show the status of an agent",
+	Long: `Show the status of the agent with the given ID (a prefix is enough), or of the agent
+serving the current directory without ID.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := selectAgent(cmd.Context(), args)
 		if err != nil {
 			return err
 		}
@@ -57,11 +72,11 @@ var agentStatusCmd = &cobra.Command{
 }
 
 var agentRefreshCmd = &cobra.Command{
-	Use:   "refresh",
-	Short: "Make the agent renew its token now",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		client, err := agentClient()
+	Use:   "refresh [ID]",
+	Short: "Make an agent renew its token now",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := selectAgent(cmd.Context(), args)
 		if err != nil {
 			return err
 		}
@@ -74,24 +89,62 @@ var agentRefreshCmd = &cobra.Command{
 }
 
 var agentStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the agent",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		client, err := agentClient()
+	Use:   "stop [ID]",
+	Short: "Stop an agent",
+	Long: `Stop the agent with the given ID (a prefix is enough), the agent serving the current
+directory without ID, or every agent with --all.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		if stopAll {
+			if len(args) > 0 {
+				return errors.New("--all does not take an ID")
+			}
+			return stopAllAgents(cmd)
+		}
+		client, err := selectAgent(ctx, args)
 		if err != nil {
 			return err
 		}
-		if err := client.Stop(cmd.Context()); err != nil {
+		st, err := client.Status(ctx)
+		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), "Agent stopped")
+		if err := client.Stop(ctx); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", st.ID)
 		return err
 	},
 }
 
-func runAgent(parent context.Context) error {
-	printBanner()
+func stopAllAgents(cmd *cobra.Command) error {
+	agents, err := agent.List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if len(agents) == 0 {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No agent running")
+		return err
+	}
+	var errs []error
+	for _, a := range agents {
+		if err := agent.NewClient(a.Socket).Stop(cmd.Context()); err != nil {
+			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
+			continue
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", a.ID); err != nil {
+			return err
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// runAgent runs the agent in the foreground. envChanged tells whether --env was given.
+func runAgent(parent context.Context, envChanged bool) error {
+	if !isDetachedChild() {
+		printBanner()
+	}
 	setupLogger(zerolog.InfoLevel)
 
 	cfg, err := loadConfig()
@@ -99,14 +152,27 @@ func runAgent(parent context.Context) error {
 		return err
 	}
 	resolveEnvFile()
+	if envChanged && len(cfg.Targets) > 0 {
+		log.Warn().Msg("--env is ignored: the config defines targets")
+	}
 
-	socket, err := agent.SocketPath(cfgFile)
+	// The agent identity: the config, and the .env file only when it is the target
+	configPath, err := agent.CanonicalPath(cfgFile)
 	if err != nil {
 		return err
 	}
-	// Fail fast, before authenticating, if an agent already serves this config
+	envKey := ""
+	if len(cfg.Targets) == 0 {
+		if envKey, err = agent.CanonicalPath(envFile); err != nil {
+			return err
+		}
+	}
+	id := agent.ID(configPath, envKey, os.Getenv(agent.SocketEnv))
+	socket := agent.SocketFor(id)
+
+	// Fail fast, before authenticating, if an agent already serves the same files
 	if _, err := agent.NewClient(socket).Status(parent); err == nil {
-		return fmt.Errorf("%w (socket %s)", agent.ErrAlreadyRunning, socket)
+		return fmt.Errorf("%w (agent %s)", agent.ErrAlreadyRunning, id)
 	}
 
 	targets := buildTargets(cfg)
@@ -126,19 +192,47 @@ func runAgent(parent context.Context) error {
 	}
 	updateTargets(targets, token)
 
+	ln, err := agent.Listen(socket)
+	if err != nil {
+		return err
+	}
+	entry := agent.Entry{
+		ID:         id,
+		PID:        os.Getpid(),
+		Socket:     socket,
+		ConfigPath: configPath,
+		EnvFile:    envKey,
+		LogFile:    os.Getenv(logFileEnv),
+		StartedAt:  time.Now(),
+	}
+	if err := agent.Register(entry); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	defer func() {
+		if err := agent.Unregister(id); err != nil {
+			log.Warn().Err(err).Msg("Failed to unregister agent")
+		}
+	}()
+
 	refresher := agent.NewRefresher(client, token, func(t *oauth2.Token) { updateTargets(targets, t) })
 	info := agent.Info{
-		ConfigPath: cfgFile,
+		ID:         id,
+		LogFile:    entry.LogFile,
+		ConfigPath: configPath,
 		Issuer:     cfg.OIDC.IssuerURL,
 		ClientID:   cfg.OIDC.ClientID,
 	}
 	for _, t := range targets {
 		info.Targets = append(info.Targets, fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key))
+		if !slices.Contains(info.TargetFiles, t.File) {
+			info.TargetFiles = append(info.TargetFiles, t.File)
+		}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return refresher.Run(gctx) })
-	g.Go(func() error { return agent.Serve(gctx, socket, refresher, info, stop) })
+	g.Go(func() error { return agent.Serve(gctx, ln, refresher, info, stop) })
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -198,7 +292,7 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	line := func(label, format string, args ...any) {
 		fmt.Fprintf(&b, "%-14s"+format+"\n", append([]any{label + ":"}, args...)...)
 	}
-	line("Agent", "running (pid %d, since %s)", st.PID, st.StartedAt.Format(time.DateTime))
+	line("Agent", "%s, running (pid %d, since %s)", st.ID, st.PID, st.StartedAt.Format(time.DateTime))
 	line("Config", "%s", st.ConfigPath)
 	line("Issuer", "%s", st.Issuer)
 	line("Client", "%s", st.ClientID)
@@ -211,6 +305,9 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	}
 	for _, t := range st.Targets {
 		line("Target", "%s", t)
+	}
+	if st.LogFile != "" {
+		line("Log file", "%s", st.LogFile)
 	}
 	_, err := io.WriteString(out, b.String())
 	return err
@@ -237,6 +334,8 @@ func init() {
 	for _, c := range []*cobra.Command{agentStatusCmd, agentRefreshCmd} {
 		c.Flags().BoolVar(&statusJSON, "json", false, "Output as JSON")
 	}
+	agentStopCmd.Flags().BoolVar(&stopAll, "all", false, "Stop every running agent")
+	agentCmd.Flags().BoolVarP(&agentDetach, "detach", "d", false, "Run the agent in the background")
 	agentCmd.AddCommand(agentStatusCmd, agentRefreshCmd, agentStopCmd)
 	rootCmd.AddCommand(agentCmd)
 }

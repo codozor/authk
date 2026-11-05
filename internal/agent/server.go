@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -15,18 +16,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// ErrAlreadyRunning is returned by Serve when another agent listens on the socket.
-var ErrAlreadyRunning = errors.New("an agent is already running for this config")
+// ErrAlreadyRunning is returned by Listen when another agent listens on the socket,
+// i.e. already serves the same config (and .env file).
+var ErrAlreadyRunning = errors.New("an agent is already running for this config and .env file")
 
 // renewTimeout bounds an on-demand renewal (the OIDC HTTP client times out after 30s).
 const renewTimeout = 35 * time.Second
 
 // Info describes what the agent serves, for status reporting.
 type Info struct {
-	ConfigPath string
-	Issuer     string
-	ClientID   string
-	Targets    []string
+	ID          string
+	LogFile     string
+	ConfigPath  string
+	Issuer      string
+	ClientID    string
+	Targets     []string
+	TargetFiles []string
 }
 
 type server struct {
@@ -37,14 +42,9 @@ type server struct {
 	stop      func()
 }
 
-// Serve answers requests on socket until ctx is cancelled. stop is called when a client
-// asks the agent to stop (POST /v1/stop); it should cancel ctx.
-func Serve(ctx context.Context, socket string, r *Refresher, info Info, stop func()) error {
-	ln, err := listen(socket)
-	if err != nil {
-		return err
-	}
-
+// Serve answers requests on ln (see Listen) until ctx is cancelled. stop is called when
+// a client asks the agent to stop (POST /v1/stop); it should cancel ctx.
+func Serve(ctx context.Context, ln net.Listener, r *Refresher, info Info, stop func()) error {
 	s := &server{ctx: ctx, refresher: r, info: info, startedAt: time.Now(), stop: stop}
 	srv := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second}
 
@@ -55,16 +55,17 @@ func Serve(ctx context.Context, socket string, r *Refresher, info Info, stop fun
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Info().Str("socket", socket).Msg("Agent listening")
+	log.Info().Str("socket", ln.Addr().String()).Str("id", info.ID).Msg("Agent listening")
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("agent server failed: %w", err)
 	}
 	return nil
 }
 
-// listen creates the socket, replacing a stale one left by an agent that crashed.
-func listen(socket string) (net.Listener, error) {
-	if err := ensureSocketDir(socket); err != nil {
+// Listen creates the agent socket, replacing a stale one left by an agent that crashed.
+// It returns ErrAlreadyRunning if another agent listens on it.
+func Listen(socket string) (net.Listener, error) {
+	if err := ensurePrivateDir(filepath.Dir(socket)); err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat(socket); err == nil {
@@ -177,11 +178,14 @@ func (s *server) renew(seen *oauth2.Token) (*oauth2.Token, error) {
 func (s *server) status() Status {
 	state := s.refresher.State()
 	st := Status{
+		ID:          s.info.ID,
+		LogFile:     s.info.LogFile,
 		PID:         os.Getpid(),
 		ConfigPath:  s.info.ConfigPath,
 		Issuer:      s.info.Issuer,
 		ClientID:    s.info.ClientID,
 		Targets:     s.info.Targets,
+		TargetFiles: s.info.TargetFiles,
 		StartedAt:   s.startedAt,
 		LastRenewal: state.LastRenewal,
 	}
