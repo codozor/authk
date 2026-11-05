@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -49,13 +49,13 @@ func (f *fakeClient) counts() (gets, refreshes int) {
 	return f.gets, f.refreshes
 }
 
-func testRefresher(c tokenClient, onToken func(*oauth2.Token)) *refresher {
-	r := newRefresher(c, onToken)
-	r.refreshBuffer = 200 * time.Millisecond
-	r.minDelay = 10 * time.Millisecond
-	r.retryDelay = 20 * time.Millisecond
-	r.maxRetryDelay = 40 * time.Millisecond
-	r.checkInterval = 10 * time.Millisecond
+func testRefresher(c TokenClient, token *oauth2.Token, onToken func(*oauth2.Token)) *Refresher {
+	r := NewRefresher(c, token, onToken)
+	r.RefreshBuffer = 200 * time.Millisecond
+	r.MinDelay = 10 * time.Millisecond
+	r.RetryDelay = 20 * time.Millisecond
+	r.MaxRetryDelay = 40 * time.Millisecond
+	r.CheckInterval = 10 * time.Millisecond
 	return r
 }
 
@@ -66,7 +66,7 @@ func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
 	var mu sync.Mutex
 	updates := 0
 	ctx, cancel := context.WithCancel(context.Background())
-	r := testRefresher(client, func(*oauth2.Token) {
+	r := testRefresher(client, initial, func(*oauth2.Token) {
 		mu.Lock()
 		updates++
 		mu.Unlock()
@@ -74,7 +74,7 @@ func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
 	})
 
 	done := make(chan error)
-	go func() { done <- r.run(ctx, initial) }()
+	go func() { done <- r.Run(ctx) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -100,9 +100,9 @@ func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
 func TestRefresher_NoRefreshTokenReauthenticates(t *testing.T) {
 	client := &fakeClient{lifetime: 300 * time.Millisecond} // client_credentials: no refresh token
 	ctx, cancel := context.WithCancel(context.Background())
-	r := testRefresher(client, func(*oauth2.Token) { cancel() })
+	r := testRefresher(client, client.newToken(), func(*oauth2.Token) { cancel() })
 
-	if err := r.run(ctx, client.newToken()); err != nil {
+	if err := r.Run(ctx); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	gets, refreshes := client.counts()
@@ -115,9 +115,9 @@ func TestRefresher_RetriesAfterFailure(t *testing.T) {
 	client := &fakeClient{lifetime: 100 * time.Millisecond, getErr: errors.New("provider down")}
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	r := testRefresher(client, func(*oauth2.Token) { t.Error("unexpected token update") })
+	r := testRefresher(client, client.newToken(), func(*oauth2.Token) { t.Error("unexpected token update") })
 
-	if err := r.run(ctx, client.newToken()); err != nil {
+	if err := r.Run(ctx); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	// ~350ms of failures with a 20ms delay doubled up to 40ms: several retries, no busy loop
@@ -129,10 +129,10 @@ func TestRefresher_RetriesAfterFailure(t *testing.T) {
 func TestRefresher_StopsOnCancel(t *testing.T) {
 	client := &fakeClient{lifetime: time.Hour, refreshToken: "rt"}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := testRefresher(client, func(*oauth2.Token) {})
+	r := testRefresher(client, client.newToken(), nil)
 
 	done := make(chan error)
-	go func() { done <- r.run(ctx, client.newToken()) }()
+	go func() { done <- r.Run(ctx) }()
 	cancel()
 	select {
 	case err := <-done:
@@ -145,7 +145,7 @@ func TestRefresher_StopsOnCancel(t *testing.T) {
 }
 
 func TestRefresher_NextRefresh(t *testing.T) {
-	r := newRefresher(nil, nil)
+	r := NewRefresher(nil, nil, nil)
 
 	if _, ok := r.nextRefresh(&oauth2.Token{AccessToken: "t"}); ok {
 		t.Error("a token without expiry must not be scheduled")
@@ -169,5 +169,75 @@ func TestRefresher_NextRefresh(t *testing.T) {
 	at, _ = r.nextRefresh(&oauth2.Token{Expiry: time.Now().Add(-time.Minute)})
 	if d := time.Until(at); d < 9*time.Second {
 		t.Errorf("expired token renewed in %v, want at least minDelay", d)
+	}
+}
+
+func TestRefresher_RenewDeduplicates(t *testing.T) {
+	client := &fakeClient{lifetime: time.Hour, refreshToken: "rt"}
+	initial := client.newToken()
+	r := testRefresher(client, initial, nil)
+
+	// Concurrent callers that saw the same token: a single renewal
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := r.Renew(context.Background(), initial); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if _, refreshes := client.counts(); refreshes != 1 {
+		t.Errorf("expected 1 refresh, got %d", refreshes)
+	}
+	if r.Current() == initial {
+		t.Error("current token was not replaced")
+	}
+
+	// nil always renews
+	if _, err := r.Renew(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, refreshes := client.counts(); refreshes != 2 {
+		t.Errorf("expected 2 refreshes, got %d", refreshes)
+	}
+}
+
+func TestRefresher_OnDemandRenewReschedules(t *testing.T) {
+	// Without rescheduling, the loop would renew at the old token schedule (~300ms)
+	client := &fakeClient{lifetime: 500 * time.Millisecond, refreshToken: "rt"}
+	r := testRefresher(client, client.newToken(), nil)
+	r.RefreshBuffer = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- r.Run(ctx) }()
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := r.Renew(context.Background(), nil); err != nil { // new token expires at ~600ms
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond) // ~350ms: past the old schedule (~300ms), before the new one (~400ms)
+	_, refreshes := client.counts()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 {
+		t.Errorf("expected only the on-demand refresh, got %d refreshes", refreshes)
+	}
+}
+
+func TestRefresher_State(t *testing.T) {
+	client := &fakeClient{lifetime: time.Hour, getErr: errors.New("boom")}
+	r := testRefresher(client, client.newToken(), nil)
+
+	if _, err := r.Renew(context.Background(), nil); err == nil {
+		t.Fatal("expected an error")
+	}
+	if st := r.State(); st.LastErr == nil || st.Token == nil {
+		t.Errorf("state = %+v, want the error and the previous token", st)
 	}
 }

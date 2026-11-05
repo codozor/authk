@@ -199,13 +199,25 @@ This allows you to run `authk` from any subdirectory within your project or rely
 
 ## Usage
 
-### Maintain Token (Long-running)
+### Agent (Long-running)
 
-This is the main mode. It fetches a token, updates the `.env` file, and keeps running to refresh the token before it expires.
+This is the main mode. The agent fetches a token, updates the `.env` file (or the configured targets), and keeps running to renew the token before it expires. It stops cleanly on `Ctrl+C` or `SIGTERM`.
 
 ```bash
-./authk --env .env
+./authk agent --env .env
 ```
+
+While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
+
+One agent runs per config file. Its socket lives in `$XDG_RUNTIME_DIR/authk/` (or a private directory in the system temp dir); set `AUTHK_SOCK` to use a specific path.
+
+```bash
+./authk agent status    # show the agent state (--json available)
+./authk agent refresh   # renew the token now
+./authk agent stop      # stop the agent
+```
+
+> Running `authk` without a command still starts the agent, but is deprecated.
 
 **Flags:**
 - `--config`: Path to config file (default: `authk.cue`)
@@ -214,18 +226,25 @@ This is the main mode. It fetches a token, updates the `.env` file, and keeps ru
 
 ### Get Token (One-off)
 
-Fetches a valid token and prints it to stdout. Useful for piping to other commands.
+Prints a valid token to stdout. Useful for piping to other commands.
 
 ```bash
 ./authk get
+curl -H "Authorization: Bearer $(./authk get)" https://api.example.com
 ```
+
+If an agent runs, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
 
 **Flags:**
 - `--id-token`: Print ID Token instead of Access Token
+- `--min-ttl`: Minimum remaining validity of a token served by the agent (default: `10s`)
+- `--no-agent`: Always request a new token, even if an agent runs
 
 ### Inspect Token
 
-Reads the current token from the `.env` file and displays its decoded content (Header and Payload). It automatically uses the file and key defined in your `targets` if available.
+Displays the decoded content (Header and Payload) of the current token, with its source and expiry.
+
+If an agent runs, its current token is inspected. Otherwise, or with `--from-env` or `--env`, the token is read from the `.env` file, which shows what applications actually read. It automatically uses the file and key defined in your `targets` if available.
 
 ```bash
 ./authk inspect
@@ -233,8 +252,9 @@ Reads the current token from the `.env` file and displays its decoded content (H
 
 **Flags:**
 - `--id-token`: Inspect the ID token instead of the Access token (searches for a target of type `id_token`)
-- `--env`: Path to .env file. If multiple targets exist for different files, use this to specify which one to inspect.
-- `--json`: Output as valid JSON without colors (useful for parsing)
+- `--from-env`: Read the token from the `.env` file even if an agent runs
+- `--env`: Path to .env file. If multiple targets exist for different files, use this to specify which one to inspect (implies `--from-env`).
+- `--json`: Output as valid JSON without colors (useful for parsing). Includes a `source` field (`agent` or `env`).
 
 ## License
 
