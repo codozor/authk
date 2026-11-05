@@ -3,6 +3,7 @@ package env
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -176,5 +177,88 @@ func TestFind_WithSeparator(t *testing.T) {
 	}
 	if found != path {
 		t.Errorf("Find() = %s, want %s", found, path)
+	}
+}
+
+func TestManager_Update_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	dir := t.TempDir()
+
+	// A new file holds a token: it must not be readable by others
+	newFile := filepath.Join(dir, ".env")
+	if err := NewManager(newFile, "TOKEN").Update("v1"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	info, err := os.Stat(newFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("new file mode = %o, want 600", got)
+	}
+
+	// An existing file keeps its permissions
+	existing := filepath.Join(dir, ".env.shared")
+	if err := os.WriteFile(existing, []byte("OTHER=1\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existing, 0o640); err != nil { // bypass umask
+		t.Fatal(err)
+	}
+	if err := NewManager(existing, "TOKEN").Update("v1"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	info, err = os.Stat(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Errorf("existing file mode = %o, want 640", got)
+	}
+
+	// No temporary file is left behind
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected only the 2 .env files, got %v", names)
+	}
+}
+
+func TestManager_Update_Symlink(t *testing.T) {
+	dir := t.TempDir()
+	realFile := filepath.Join(dir, "real.env")
+	link := filepath.Join(dir, ".env")
+	if err := os.WriteFile(realFile, []byte("TOKEN=old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	if err := NewManager(link, "TOKEN").Update("new"); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlink was replaced by a regular file")
+	}
+	content, err := os.ReadFile(realFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "TOKEN=\"new\"\n" {
+		t.Errorf("target file content = %q", content)
 	}
 }

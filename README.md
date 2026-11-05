@@ -142,6 +142,10 @@ targets: [
 
 When `targets` is defined, the global `tokenKey` and `idTokenKey` are ignored.
 
+Relative `file` paths are resolved against the directory of the configuration file, so running `authk` from a subdirectory updates the same files.
+
+`.env` files are written atomically (temporary file + rename): readers never see a partially written file. An existing file keeps its permissions and a symlink is followed; a file created by `authk` gets `0600` permissions since it holds a token.
+
 ## Secrets Management
 
 `authk` integrates with [vals](https://github.com/helmfile/vals) to support loading secrets securely from various sources. You can use special URI schemes in your configuration file to reference secrets instead of hardcoding them.
