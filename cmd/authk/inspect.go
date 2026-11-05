@@ -9,90 +9,41 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codozor/authk/internal/agent"
 	"github.com/codozor/authk/internal/env"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
 var (
-	jsonOutput bool
-	inspectID  bool
+	jsonOutput     bool
+	inspectID      bool
+	inspectFromEnv bool
+)
+
+const (
+	sourceAgent = "agent"
+	sourceEnv   = "env"
 )
 
 var inspectCmd = &cobra.Command{
 	Use:   "inspect",
 	Short: "Inspect the current token",
-	Long:  `Read the token from the .env file and display its decoded content. Use the --json flag for machine-readable output.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
+	Long: `Display the decoded content of the current token.
+
+If an agent runs for this config, its current token is inspected. Otherwise, or with
+--from-env or --env, the token is read from the .env file, which shows what applications
+actually read. Use the --json flag for machine-readable output.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		requestedType := agent.TypeAccessToken
+		if inspectID {
+			requestedType = agent.TypeIDToken
+		}
+
+		token, source, err := currentToken(cmd, requestedType)
 		if err != nil {
 			return err
-		}
-		resolveEnvFile()
-
-		// Determine which file and key to use
-		targetFile := envFile
-		targetKey := ""
-
-		requestedType := "access_token"
-		if inspectID {
-			requestedType = "id_token"
-		}
-
-		found := false
-		// 1. If --env is explicitly provided, try to find a target matching that file and type
-		if cmd.Flags().Changed("env") {
-			// Target files are absolute (resolved against the config dir): compare absolute paths
-			wanted, err := filepath.Abs(envFile)
-			if err != nil {
-				return fmt.Errorf("failed to resolve env file path: %w", err)
-			}
-			for _, t := range cfg.Targets {
-				if t.File == wanted && t.Type == requestedType {
-					targetKey = t.Key
-					found = true
-					break
-				}
-			}
-		}
-
-		// 2. If not found yet, take the first target matching the requested type
-		if !found {
-			for _, t := range cfg.Targets {
-				if t.Type == requestedType {
-					targetFile = t.File
-					targetKey = t.Key
-					found = true
-					break
-				}
-			}
-		}
-
-		// 3. Fallback to legacy/default behavior
-		if !found {
-			targetFile = envFile
-			if inspectID {
-				if cfg.IDTokenKey == "" {
-					return fmt.Errorf("idTokenKey not configured in config file")
-				}
-				targetKey = cfg.IDTokenKey
-			} else {
-				targetKey = cfg.TokenKey
-			}
-		}
-
-		// Final check to find the file on disk (it might be in a parent directory)
-		if foundPath, err := env.Find(targetFile); err == nil {
-			targetFile = foundPath
-		}
-
-		// Initialize Env Manager
-		envMgr := env.NewManager(targetFile, targetKey)
-
-		// Get Token
-		token, err := envMgr.Get()
-		if err != nil {
-			return fmt.Errorf("failed to get token from .env: %w", err)
 		}
 
 		// Parse JWT
@@ -101,17 +52,18 @@ var inspectCmd = &cobra.Command{
 			return fmt.Errorf("invalid token format: expected 3 parts, got %d", len(parts))
 		}
 
-		if jsonOutput {
-			header, err := decodeSegment(parts[0])
-			if err != nil {
-				return fmt.Errorf("failed to decode header: %w", err)
-			}
-			payload, err := decodeSegment(parts[1])
-			if err != nil {
-				return fmt.Errorf("failed to decode payload: %w", err)
-			}
+		header, err := decodeSegment(parts[0])
+		if err != nil {
+			return fmt.Errorf("failed to decode header: %w", err)
+		}
+		payload, err := decodeSegment(parts[1])
+		if err != nil {
+			return fmt.Errorf("failed to decode payload: %w", err)
+		}
 
+		if jsonOutput {
 			output := map[string]interface{}{
+				"source":  source,
 				"header":  header,
 				"payload": payload,
 			}
@@ -124,11 +76,117 @@ var inspectCmd = &cobra.Command{
 			return nil
 		}
 
+		printTokenSummary(source, payload)
 		printJSON("Header", parts[0])
 		printJSON("Payload", parts[1])
 
 		return nil
 	},
+}
+
+// currentToken returns the token to inspect and where it comes from: the agent if it
+// runs, the .env file otherwise or when asked to (--from-env, or --env given).
+func currentToken(cmd *cobra.Command, requestedType string) (token, source string, err error) {
+	if !inspectFromEnv && !cmd.Flags().Changed("env") {
+		client, err := agentClient()
+		if err != nil {
+			return "", "", err
+		}
+		resp, err := client.Token(cmd.Context(), requestedType, 0)
+		if err == nil {
+			return resp.Token, sourceAgent, nil
+		}
+		if !isNotRunning(err) {
+			return "", "", err
+		}
+	}
+
+	token, err = tokenFromEnv(cmd, requestedType)
+	return token, sourceEnv, err
+}
+
+// tokenFromEnv reads the token of the requested type from the matching target file.
+func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", err
+	}
+	resolveEnvFile()
+
+	// Determine which file and key to use
+	targetFile := envFile
+	targetKey := ""
+
+	found := false
+	// 1. If --env is explicitly provided, try to find a target matching that file and type
+	if cmd.Flags().Changed("env") {
+		// Target files are absolute (resolved against the config dir): compare absolute paths
+		wanted, err := filepath.Abs(envFile)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve env file path: %w", err)
+		}
+		for _, t := range cfg.Targets {
+			if t.File == wanted && t.Type == requestedType {
+				targetKey = t.Key
+				found = true
+				break
+			}
+		}
+	}
+
+	// 2. If not found yet, take the first target matching the requested type
+	if !found {
+		for _, t := range cfg.Targets {
+			if t.Type == requestedType {
+				targetFile = t.File
+				targetKey = t.Key
+				found = true
+				break
+			}
+		}
+	}
+
+	// 3. Fallback to legacy/default behavior
+	if !found {
+		targetFile = envFile
+		if requestedType == agent.TypeIDToken {
+			if cfg.IDTokenKey == "" {
+				return "", fmt.Errorf("idTokenKey not configured in config file")
+			}
+			targetKey = cfg.IDTokenKey
+		} else {
+			targetKey = cfg.TokenKey
+		}
+	}
+
+	// Final check to find the file on disk (it might be in a parent directory)
+	if foundPath, err := env.Find(targetFile); err == nil {
+		targetFile = foundPath
+	}
+
+	token, err := env.NewManager(targetFile, targetKey).Get()
+	if err != nil {
+		return "", fmt.Errorf("failed to get token from .env: %w", err)
+	}
+	return token, nil
+}
+
+// printTokenSummary prints where the token comes from and when it expires.
+func printTokenSummary(source string, payload interface{}) {
+	headerStyle := color.New(color.FgCyan, color.Bold)
+	_, _ = headerStyle.Println("--- Token ---")
+
+	fmt.Printf("Source: %s\n", source)
+	if claims, ok := payload.(map[string]interface{}); ok {
+		if exp, ok := claims["exp"].(float64); ok {
+			status := describeExpiry(time.Unix(int64(exp), 0))
+			if strings.HasPrefix(status, "EXPIRED") {
+				status = color.New(color.FgRed, color.Bold).Sprint(status)
+			}
+			fmt.Printf("Status: %s\n", status)
+		}
+	}
+	fmt.Println()
 }
 
 func decodeSegment(segment string) (interface{}, error) {
@@ -147,7 +205,7 @@ func decodeSegment(segment string) (interface{}, error) {
 func printJSON(title, segment string) {
 	// Header style
 	headerStyle := color.New(color.FgCyan, color.Bold)
-	headerStyle.Printf("--- %s ---\n", title)
+	_, _ = headerStyle.Printf("--- %s ---\n", title)
 
 	obj, err := decodeSegment(segment)
 	if err != nil {
@@ -224,4 +282,5 @@ func init() {
 	rootCmd.AddCommand(inspectCmd)
 	inspectCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as valid JSON without colors")
 	inspectCmd.Flags().BoolVar(&inspectID, "id-token", false, "Inspect the ID token instead of the Access token")
+	inspectCmd.Flags().BoolVar(&inspectFromEnv, "from-env", false, "Read the token from the .env file even if an agent runs")
 }

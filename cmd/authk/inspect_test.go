@@ -49,7 +49,7 @@ func TestPrintJSON(t *testing.T) {
 
 	printJSON("Test", encoded)
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer

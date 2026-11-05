@@ -48,8 +48,7 @@ targets: [
 func TestLoad_Vals(t *testing.T) {
 	// Set env var for testing
 	expectedSecret := "super-secret-value"
-	os.Setenv("TEST_OIDC_SECRET", expectedSecret)
-	defer os.Unsetenv("TEST_OIDC_SECRET")
+	t.Setenv("TEST_OIDC_SECRET", expectedSecret)
 
 	content := `
 package config
