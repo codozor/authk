@@ -36,11 +36,14 @@ OIDC provider.`,
 		}
 
 		if !getNoAgent {
-			client, err := agentClient()
-			if err != nil {
+			client, err := agentForContext(cmd.Context())
+			if err != nil && !isNotRunning(err) {
 				return err
 			}
-			resp, err := client.Token(cmd.Context(), typ, getMinTTL)
+			var resp *agent.TokenResponse
+			if err == nil {
+				resp, err = client.Token(cmd.Context(), typ, getMinTTL)
+			}
 			if err == nil {
 				log.Debug().Msg("Token served by the agent")
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), resp.Token)

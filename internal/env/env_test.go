@@ -262,3 +262,61 @@ func TestManager_Update_Symlink(t *testing.T) {
 		t.Errorf("target file content = %q", content)
 	}
 }
+
+func TestResolveEnvFile(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	project := filepath.Join(home, "dev", "project")
+	sub := filepath.Join(project, "src", "pkg")
+	other := filepath.Join(home, "dev", "other")
+	for _, d := range []string{sub, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touch := func(p string) {
+		t.Helper()
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projectConfig := filepath.Join(project, "authk.cue")
+	globalConfig := filepath.Join(home, "authk.cue")
+	// Never used: the home directory is not searched
+	touch(filepath.Join(home, ".env"))
+	// Above the project: never used for a project config
+	touch(filepath.Join(home, "dev", ".env"))
+
+	tests := []struct {
+		name, env, config, cwd, want string
+		setup                        func()
+	}{
+		{name: "project, no .env: next to the config", env: ".env", config: projectConfig, cwd: sub,
+			want: filepath.Join(project, ".env")},
+		{name: "project, cwd outside: next to the config", env: ".env", config: projectConfig, cwd: other,
+			want: filepath.Join(project, ".env")},
+		{name: "explicit path is made absolute", env: "front/.env", config: projectConfig, cwd: project,
+			want: filepath.Join(project, "front", ".env")},
+		{name: "project, nearest .env in a subdirectory", env: ".env", config: projectConfig, cwd: sub,
+			setup: func() { touch(filepath.Join(project, "src", ".env")) },
+			want:  filepath.Join(project, "src", ".env")},
+		{name: "global config, no .env: in cwd, not ~/.env nor ~/dev/.env", env: ".env.local", config: globalConfig, cwd: other,
+			want: filepath.Join(other, ".env.local")},
+		{name: "global config, .env found in a parent below home", env: ".env", config: globalConfig, cwd: other,
+			want: filepath.Join(home, "dev", ".env")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup()
+			}
+			got, err := ResolveEnvFile(tt.env, tt.config, tt.cwd, home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("got %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
