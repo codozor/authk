@@ -147,27 +147,27 @@ func runAgent(parent context.Context, envChanged bool) error {
 	}
 	setupLogger(zerolog.InfoLevel)
 
-	cfg, err := loadConfig()
+	profile, err := loadProfile()
 	if err != nil {
 		return err
 	}
 	resolveEnvFile()
-	if envChanged && len(cfg.Targets) > 0 {
-		log.Warn().Msg("--env is ignored: the config defines targets")
+	if envChanged && len(profile.Targets) > 0 {
+		log.Warn().Msg("--env is ignored: the profile defines targets")
 	}
 
-	// The agent identity: the config, and the .env file only when it is the target
+	// The agent identity: the config and profile, and the .env file only when it is the target
 	configPath, err := agent.CanonicalPath(cfgFile)
 	if err != nil {
 		return err
 	}
 	envKey := ""
-	if len(cfg.Targets) == 0 {
+	if len(profile.Targets) == 0 {
 		if envKey, err = agent.CanonicalPath(envFile); err != nil {
 			return err
 		}
 	}
-	id := agent.ID(configPath, envKey, os.Getenv(agent.SocketEnv))
+	id := agent.ID(configPath, profile.Name, envKey, os.Getenv(agent.SocketEnv))
 	socket := agent.SocketFor(id)
 
 	// Fail fast, before authenticating, if an agent already serves the same files
@@ -175,18 +175,18 @@ func runAgent(parent context.Context, envChanged bool) error {
 		return fmt.Errorf("%w (agent %s)", agent.ErrAlreadyRunning, id)
 	}
 
-	targets := buildTargets(cfg)
+	targets := buildTargets(profile)
 
 	// Stop cleanly on Ctrl+C / SIGTERM, or when a client asks to
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := oidc.NewClient(cfg)
+	client, err := oidc.NewClient(profile)
 	if err != nil {
 		return fmt.Errorf("failed to initialize OIDC client: %w", err)
 	}
 
-	token, err := client.GetToken(ctx, "", "")
+	token, err := client.GetToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get initial token: %w", err)
 	}
@@ -201,6 +201,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 		PID:        os.Getpid(),
 		Socket:     socket,
 		ConfigPath: configPath,
+		Profile:    profile.Name,
 		EnvFile:    envKey,
 		LogFile:    os.Getenv(logFileEnv),
 		StartedAt:  time.Now(),
@@ -220,8 +221,9 @@ func runAgent(parent context.Context, envChanged bool) error {
 		ID:         id,
 		LogFile:    entry.LogFile,
 		ConfigPath: configPath,
-		Issuer:     cfg.OIDC.IssuerURL,
-		ClientID:   cfg.OIDC.ClientID,
+		Profile:    profile.Name,
+		Issuer:     profile.IssuerURL,
+		ClientID:   profile.ClientID,
 	}
 	for _, t := range targets {
 		info.Targets = append(info.Targets, fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key))
@@ -240,16 +242,16 @@ func runAgent(parent context.Context, envChanged bool) error {
 	return nil
 }
 
-// buildTargets returns the configured targets, or the default ones written to --env.
-func buildTargets(cfg *config.Config) []config.Target {
-	if len(cfg.Targets) > 0 {
-		log.Info().Int("count", len(cfg.Targets)).Msg("Configured with multiple targets")
-		return cfg.Targets
+// buildTargets returns the profile targets, or the default ones written to --env.
+func buildTargets(p *config.Profile) []config.Target {
+	if len(p.Targets) > 0 {
+		log.Info().Int("count", len(p.Targets)).Str("profile", p.Name).Msg("Configured with multiple targets")
+		return p.Targets
 	}
 
-	targets := []config.Target{{File: envFile, Key: cfg.TokenKey, Type: agent.TypeAccessToken}}
-	if cfg.IDTokenKey != "" {
-		targets = append(targets, config.Target{File: envFile, Key: cfg.IDTokenKey, Type: agent.TypeIDToken})
+	targets := []config.Target{{File: envFile, Key: p.EnvKeys.AccessToken, Type: agent.TypeAccessToken}}
+	if p.EnvKeys.IDToken != "" {
+		targets = append(targets, config.Target{File: envFile, Key: p.EnvKeys.IDToken, Type: agent.TypeIDToken})
 	}
 	log.Info().Str("env_file", envFile).Msg("Configured with default targets")
 	return targets
@@ -294,6 +296,7 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	}
 	line("Agent", "%s, running (pid %d, since %s)", st.ID, st.PID, st.StartedAt.Format(time.DateTime))
 	line("Config", "%s", st.ConfigPath)
+	line("Profile", "%s", st.Profile)
 	line("Issuer", "%s", st.Issuer)
 	line("Client", "%s", st.ClientID)
 	line("Token", "%s", describeExpiry(st.Expiry))

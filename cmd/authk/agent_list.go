@@ -101,7 +101,7 @@ func printAgentsTable(out io.Writer, agents []agent.Agent) error {
 	}
 	home, _ := os.UserHomeDir()
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tPID\tSTARTED\tTOKEN\tMODE\tCONFIG\tWRITES")
+	_, _ = fmt.Fprintln(w, "ID\tPID\tSTARTED\tTOKEN\tMODE\tCONFIG\tPROFILE\tWRITES")
 	for _, a := range agents {
 		mode := "foreground"
 		if a.LogFile != "" {
@@ -119,9 +119,9 @@ func printAgentsTable(out io.Writer, agents []agent.Agent) error {
 			}
 			writes = strings.Join(files, ", ")
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			a.ID, a.PID, a.StartedAt.Local().Format("2006-01-02 15:04"), token, mode,
-			tildePath(a.ConfigPath, home), writes)
+			tildePath(a.ConfigPath, home), a.Profile, writes)
 	}
 	return w.Flush()
 }
