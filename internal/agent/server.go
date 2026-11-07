@@ -28,6 +28,7 @@ type Info struct {
 	ID          string
 	LogFile     string
 	ConfigPath  string
+	Profile     string
 	Issuer      string
 	ClientID    string
 	Targets     []string
@@ -182,6 +183,7 @@ func (s *server) status() Status {
 		LogFile:     s.info.LogFile,
 		PID:         os.Getpid(),
 		ConfigPath:  s.info.ConfigPath,
+		Profile:     s.info.Profile,
 		Issuer:      s.info.Issuer,
 		ClientID:    s.info.ClientID,
 		Targets:     s.info.Targets,

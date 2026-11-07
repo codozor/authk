@@ -31,7 +31,11 @@ func findConfig() {
 	}
 }
 
-// loadConfig finds and loads the config file. All commands must use it to behave consistently.
+// profileEnv selects the profile when --profile is not given.
+const profileEnv = "AUTHK_PROFILE"
+
+// loadConfig finds and loads the config file, without resolving secrets. All commands
+// must use it to behave consistently.
 func loadConfig() (*config.Config, error) {
 	findConfig()
 
@@ -40,6 +44,23 @@ func loadConfig() (*config.Config, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 	return cfg, nil
+}
+
+// profileFlag returns the requested profile: --profile, else AUTHK_PROFILE, else "".
+func profileFlag() string {
+	if profileName != "" {
+		return profileName
+	}
+	return os.Getenv(profileEnv)
+}
+
+// loadProfile loads the config and returns the selected profile, secrets resolved.
+func loadProfile() (*config.Profile, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Profile(profileFlag())
 }
 
 // resolveEnvFile sets envFile to the absolute path of the .env file to use with the
@@ -63,7 +84,15 @@ func agentForContext(ctx context.Context) (*agent.Client, error) {
 		return agent.NewClient(socket), nil
 	}
 
-	findConfig()
+	// The profile name only needs the structure of the config: secrets are not resolved
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	profile, err := cfg.ProfileName(profileFlag())
+	if err != nil {
+		return nil, err
+	}
 	resolveEnvFile()
 	configPath, err := agent.CanonicalPath(cfgFile)
 	if err != nil {
@@ -73,7 +102,7 @@ func agentForContext(ctx context.Context) (*agent.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := agent.Find(ctx, configPath, envPath)
+	a, err := agent.Find(ctx, configPath, profile, envPath)
 	if err != nil {
 		return nil, err
 	}

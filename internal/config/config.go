@@ -1,13 +1,20 @@
+// Package config loads authk configuration files (CUE).
+//
+// Version 2 files hold named profiles. Version 1 files (no version field) are
+// converted in memory into a single profile named "default".
 package config
 
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
 	"github.com/helmfile/vals"
 	_ "github.com/helmfile/vals/pkg/providers/file"
@@ -15,115 +22,295 @@ import (
 	_ "github.com/helmfile/vals/pkg/providers/sops"
 )
 
-//go:embed schema.cue
-var schemaContent []byte
+//go:embed schema_v1.cue
+var schemaV1 []byte
 
+//go:embed schema_v2.cue
+var schemaV2 []byte
+
+// CurrentVersion is the configuration format written by "authk config migrate".
+const CurrentVersion = 2
+
+// DefaultProfileName is the profile created from a version 1 file.
+const DefaultProfileName = "default"
+
+// Flow types.
+const (
+	FlowClientCredentials = "client_credentials"
+	FlowPassword          = "password"
+	FlowDeviceCode        = "device_code"
+)
+
+// Client authentication methods.
+const (
+	MethodClientSecretBasic = "client_secret_basic"
+	MethodClientSecretPost  = "client_secret_post"
+	MethodNone              = "none"
+)
+
+// Target types.
+const (
+	TargetAccessToken = "access_token"
+	TargetIDToken     = "id_token"
+)
+
+// Config is a loaded configuration file. Secrets are not resolved: use Profile.
 type Config struct {
-	OIDC       OIDCConfig `json:"oidc"`
-	User       UserConfig `json:"user"`
-	TokenKey   string     `json:"tokenKey"`
-	IDTokenKey string     `json:"idTokenKey,omitempty"`
-	Targets    []Target   `json:"targets,omitempty"`
+	Version        int                `json:"version"`
+	DefaultProfile string             `json:"defaultProfile,omitempty"`
+	Profiles       map[string]Profile `json:"profiles"`
+
+	path          string // file it was loaded from
+	sourceVersion int    // version of the file on disk (1 for converted files)
 }
 
+// Profile is one identity: an OIDC client, how to get its tokens and where to write them.
+type Profile struct {
+	Name      string   `json:"-"`
+	IssuerURL string   `json:"issuerUrl"`
+	ClientID  string   `json:"clientId"`
+	Client    Client   `json:"client"`
+	Flow      Flow     `json:"flow"`
+	Scopes    []string `json:"scopes"`
+	EnvKeys   EnvKeys  `json:"envKeys"`
+	Targets   []Target `json:"targets,omitempty"`
+}
+
+// Client is how the client authenticates to the token endpoint.
+type Client struct {
+	Method string `json:"method"`
+	Secret string `json:"secret"`
+}
+
+// Public reports whether the client has no secret (Keycloak "Client authentication: Off").
+func (c Client) Public() bool {
+	return c.Method == MethodNone || c.Secret == ""
+}
+
+// Flow is how tokens are obtained.
+type Flow struct {
+	Type     string `json:"type"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// EnvKeys are the keys written to the --env file when a profile has no targets.
+type EnvKeys struct {
+	AccessToken string `json:"accessToken"`
+	IDToken     string `json:"idToken"`
+}
+
+// Target is a key of a file to update with a token.
 type Target struct {
 	File string `json:"file"`
 	Key  string `json:"key"`
 	Type string `json:"type"`
 }
 
-type OIDCConfig struct {
-	IssuerURL    string   `json:"issuerUrl"`
-	ClientID     string   `json:"clientId"`
-	ClientSecret string   `json:"clientSecret"`
-	Scopes       []string `json:"scopes"`
-	AuthMethod   string   `json:"authMethod"`
-}
+// Path returns the file the config was loaded from.
+func (c *Config) Path() string { return c.path }
 
-type UserConfig struct {
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-}
+// SourceVersion returns the version of the file on disk (1 for a converted v1 file).
+func (c *Config) SourceVersion() int { return c.sourceVersion }
 
+// Load reads a configuration file, version 1 or 2, and validates its structure.
+// Secrets (ref+...) are not resolved: they are resolved per profile by Profile.
 func Load(path string) (*Config, error) {
-	ctx := cuecontext.New()
-
-	// Load schema
-	schema := ctx.CompileBytes(schemaContent)
-	if schema.Err() != nil {
-		return nil, fmt.Errorf("failed to compile schema: %w", schema.Err())
-	}
-
-	// Read config file
-	configBytes, err := os.ReadFile(path)
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Compile config
-	val := ctx.CompileBytes(configBytes)
+	ctx := cuecontext.New()
+	val := ctx.CompileBytes(content, cue.Filename(path))
 	if val.Err() != nil {
 		return nil, fmt.Errorf("failed to compile config file: %w", val.Err())
 	}
 
-	// Unify with schema
-	unified := schema.Unify(val)
-	if err := unified.Validate(); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+	version := 1
+	if v := val.LookupPath(cue.ParsePath("version")); v.Exists() {
+		n, err := v.Int64()
+		if err != nil {
+			return nil, fmt.Errorf("invalid config version: %w", err)
+		}
+		version = int(n)
 	}
 
-	// Decode into map for processing
-	var configMap map[string]interface{}
-	if err := unified.Decode(&configMap); err != nil {
-		return nil, fmt.Errorf("failed to decode config to map: %w", err)
+	var cfg *Config
+	switch version {
+	case 1:
+		var raw v1Config
+		if err := decode(ctx, schemaV1, val, &raw); err != nil {
+			return nil, err
+		}
+		cfg = raw.convert()
+	case 2:
+		cfg = &Config{}
+		if err := decode(ctx, schemaV2, val, cfg); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported config version %d (this authk supports 1 and 2)", version)
+	}
+
+	cfg.path = path
+	cfg.sourceVersion = version
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// decode validates val against schema and decodes it into out.
+func decode(ctx *cue.Context, schema []byte, val cue.Value, out any) error {
+	s := ctx.CompileBytes(schema)
+	if s.Err() != nil {
+		return fmt.Errorf("failed to compile schema: %w", s.Err())
+	}
+	unified := s.Unify(val)
+	if err := unified.Validate(cue.Concrete(true)); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+	if err := unified.Decode(out); err != nil {
+		return fmt.Errorf("failed to decode config: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) validate() error {
+	if len(c.Profiles) == 0 {
+		return errors.New("config validation failed: no profile defined")
+	}
+	if c.DefaultProfile != "" {
+		if _, ok := c.Profiles[c.DefaultProfile]; !ok {
+			return fmt.Errorf("config validation failed: defaultProfile %q is not defined", c.DefaultProfile)
+		}
+	}
+	return nil
+}
+
+// ProfileNames returns the profile names, sorted.
+func (c *Config) ProfileNames() []string {
+	names := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ProfileName returns the profile to use: name if given, otherwise defaultProfile,
+// otherwise the only profile.
+func (c *Config) ProfileName(name string) (string, error) {
+	switch {
+	case name != "":
+		if _, ok := c.Profiles[name]; !ok {
+			return "", fmt.Errorf("profile %q not found in %s (profiles: %s)",
+				name, c.path, strings.Join(c.ProfileNames(), ", "))
+		}
+		return name, nil
+	case c.DefaultProfile != "":
+		return c.DefaultProfile, nil
+	case len(c.Profiles) == 1:
+		return c.ProfileNames()[0], nil
+	}
+	return "", fmt.Errorf("%s defines several profiles (%s): use --profile or set defaultProfile",
+		c.path, strings.Join(c.ProfileNames(), ", "))
+}
+
+// Profile returns the profile to use (see ProfileName), with its secrets resolved
+// and its target files made absolute (relative to the config file directory).
+func (c *Config) Profile(name string) (*Profile, error) {
+	name, err := c.ProfileName(name)
+	if err != nil {
+		return nil, err
+	}
+	p := c.Profiles[name]
+
+	if err := resolveSecrets(&p); err != nil {
+		return nil, err
+	}
+	p.Name = name
+	if err := p.resolveTargetPaths(c.path); err != nil {
+		return nil, err
+	}
+	if err := p.validate(); err != nil {
+		return nil, fmt.Errorf("profile %q: %w", name, err)
+	}
+	return &p, nil
+}
+
+// validate checks what the schema cannot: values that come from secrets, and
+// combinations of fields.
+func (p *Profile) validate() error {
+	if p.IssuerURL == "" {
+		return errors.New("issuerUrl is empty")
+	}
+	if p.ClientID == "" {
+		return errors.New("clientId is empty")
+	}
+	switch p.Flow.Type {
+	case FlowClientCredentials:
+		if p.Client.Public() {
+			return errors.New("the client_credentials flow requires a client secret (public client)")
+		}
+	case FlowPassword:
+		if p.Flow.Username == "" || p.Flow.Password == "" {
+			return errors.New("the password flow requires a username and a password")
+		}
+	}
+	return nil
+}
+
+// resolveSecrets replaces ref+env://, ref+file://, ref+sops:// and ref+k8s:// values.
+func resolveSecrets(p *Profile) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
 	}
 
 	// Manual expansion of ref+env:// since vals env provider is problematic
-	if err := processEnvRefs(configMap); err != nil {
-		return nil, fmt.Errorf("failed to process env refs: %w", err)
+	if err := processEnvRefs(m); err != nil {
+		return fmt.Errorf("failed to process env refs: %w", err)
 	}
-
-	// Process with vals
 	runtime, err := vals.New(vals.Options{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize vals runtime: %w", err)
+		return fmt.Errorf("failed to initialize vals runtime: %w", err)
 	}
-	processedMap, err := runtime.Eval(configMap)
+	resolved, err := runtime.Eval(m)
 	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate secrets with vals: %w", err)
+		return fmt.Errorf("failed to evaluate secrets with vals: %w", err)
 	}
 
-	// Decode into struct via JSON to ensure type safety
-	configJSON, err := json.Marshal(processedMap)
+	data, err = json.Marshal(resolved)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal processed config: %w", err)
+		return fmt.Errorf("failed to marshal processed config: %w", err)
 	}
-
-	var cfg Config
-	if err := json.Unmarshal(configJSON, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to decode config: %w", err)
+	var out Profile
+	if err := json.Unmarshal(data, &out); err != nil {
+		return fmt.Errorf("failed to decode config: %w", err)
 	}
-
-	if err := cfg.resolveTargetPaths(path); err != nil {
-		return nil, err
-	}
-
-	return &cfg, nil
+	*p = out
+	return nil
 }
 
 // resolveTargetPaths makes relative target files relative to the config file directory,
 // so that running authk from a subdirectory updates the same files.
-func (c *Config) resolveTargetPaths(configPath string) error {
+func (p *Profile) resolveTargetPaths(configPath string) error {
 	absConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve config path: %w", err)
 	}
 	baseDir := filepath.Dir(absConfig)
-	for i, t := range c.Targets {
+	for i, t := range p.Targets {
 		if filepath.IsAbs(t.File) {
-			c.Targets[i].File = filepath.Clean(t.File)
+			p.Targets[i].File = filepath.Clean(t.File)
 		} else {
-			c.Targets[i].File = filepath.Join(baseDir, t.File)
+			p.Targets[i].File = filepath.Join(baseDir, t.File)
 		}
 	}
 	return nil

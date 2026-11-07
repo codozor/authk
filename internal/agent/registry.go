@@ -26,6 +26,7 @@ type Entry struct {
 	PID        int       `json:"pid"`
 	Socket     string    `json:"socket"`
 	ConfigPath string    `json:"configPath"`
+	Profile    string    `json:"profile"`
 	EnvFile    string    `json:"envFile,omitempty"` // only when the config has no targets
 	LogFile    string    `json:"logFile,omitempty"` // only for a detached agent
 	StartedAt  time.Time `json:"startedAt"`
@@ -146,15 +147,15 @@ func removeStale(e Entry) {
 	}
 }
 
-// Find returns the agent serving configPath for the .env file envFile (paths must be
-// canonical):
-//   - the only running agent of this config, whatever its .env file: client and
-//     credentials come from the config, so its token is the right one;
+// Find returns the agent serving the profile of configPath for the .env file envFile
+// (paths must be canonical):
+//   - the only running agent of this profile, whatever its .env file: client and
+//     credentials come from the profile, so its token is the right one;
 //   - among several, the one writing envFile (or using the config targets);
 //   - otherwise ErrAmbiguous, since their credentials may differ (ref+env:// secrets).
 //
 // It returns ErrNotRunning if no agent serves this config.
-func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
+func Find(ctx context.Context, configPath, profile, envFile string) (*Agent, error) {
 	agents, err := List(ctx)
 	if err != nil {
 		return nil, err
@@ -162,7 +163,7 @@ func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
 
 	var candidates []Agent
 	for _, a := range agents {
-		if a.ConfigPath == configPath {
+		if a.ConfigPath == configPath && a.Profile == profile {
 			candidates = append(candidates, a)
 		}
 	}
@@ -182,8 +183,8 @@ func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
 	if len(exact) == 1 {
 		return checkResponding(exact[0])
 	}
-	return nil, fmt.Errorf("%w for %s: %s; use --env, an agent ID or %s",
-		ErrAmbiguous, configPath, describe(candidates), SocketEnv)
+	return nil, fmt.Errorf("%w for profile %s of %s: %s; use --env, an agent ID or %s",
+		ErrAmbiguous, profile, configPath, describe(candidates), SocketEnv)
 }
 
 // FindByID returns the running agent whose ID starts with prefix.

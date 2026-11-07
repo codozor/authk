@@ -110,7 +110,7 @@ func currentToken(cmd *cobra.Command, requestedType string) (token, source strin
 
 // tokenFromEnv reads the token of the requested type from the matching target file.
 func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
-	cfg, err := loadConfig()
+	profile, err := loadProfile()
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve env file path: %w", err)
 		}
-		for _, t := range cfg.Targets {
+		for _, t := range profile.Targets {
 			if t.File == wanted && t.Type == requestedType {
 				targetKey = t.Key
 				found = true
@@ -139,7 +139,7 @@ func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
 
 	// 2. If not found yet, take the first target matching the requested type
 	if !found {
-		for _, t := range cfg.Targets {
+		for _, t := range profile.Targets {
 			if t.Type == requestedType {
 				targetFile = t.File
 				targetKey = t.Key
@@ -153,12 +153,12 @@ func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
 	if !found {
 		targetFile = envFile
 		if requestedType == agent.TypeIDToken {
-			if cfg.IDTokenKey == "" {
-				return "", fmt.Errorf("idTokenKey not configured in config file")
+			if profile.EnvKeys.IDToken == "" {
+				return "", fmt.Errorf("no ID Token key configured for profile %s (envKeys.idToken)", profile.Name)
 			}
-			targetKey = cfg.IDTokenKey
+			targetKey = profile.EnvKeys.IDToken
 		} else {
-			targetKey = cfg.TokenKey
+			targetKey = profile.EnvKeys.AccessToken
 		}
 	}
 

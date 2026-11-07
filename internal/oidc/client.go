@@ -19,72 +19,67 @@ import (
 // (e.g. client_credentials flow): the caller must re-authenticate instead.
 var ErrNoRefreshToken = errors.New("no refresh token available")
 
+// ErrFlowNotSupported is returned by GetToken for a flow this version cannot run yet.
+var ErrFlowNotSupported = errors.New("flow not supported yet")
+
 type Client struct {
-	cfg          *config.Config
+	profile      *config.Profile
 	provider     *oidc.Provider
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
-	public       bool
 }
 
-func NewClient(cfg *config.Config) (*Client, error) {
+// NewClient discovers the OIDC provider of the profile. The profile must come from
+// config.Config.Profile (secrets resolved).
+func NewClient(p *config.Profile) (*Client, error) {
 	// Use custom HTTP client with timeout, for discovery and for every token request
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	ctx := oidc.ClientContext(context.Background(), httpClient)
 
-	provider, err := oidc.NewProvider(ctx, cfg.OIDC.IssuerURL)
+	provider, err := oidc.NewProvider(ctx, p.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC provider: %w", err)
 	}
 
-	// Determine AuthStyle based on AuthMethod
 	var authStyle oauth2.AuthStyle
-	public := false
-	switch cfg.OIDC.AuthMethod {
-	case "none":
-		public = true
-	case "client_secret_post", "post":
+	switch p.Client.Method {
+	case config.MethodNone:
+	case config.MethodClientSecretPost:
 		authStyle = oauth2.AuthStyleInParams
-	case "client_secret_basic", "basic", "": // Default to basic if not specified
+	case config.MethodClientSecretBasic, "":
 		authStyle = oauth2.AuthStyleInHeader
 	default:
-		return nil, fmt.Errorf("unsupported auth method: %s", cfg.OIDC.AuthMethod)
+		return nil, fmt.Errorf("unsupported client authentication method: %s", p.Client.Method)
 	}
 
-	// A client without secret is a public client (e.g. Keycloak "Client authentication: Off"):
-	// client_id is sent in the request body and no client_secret is sent.
-	if cfg.OIDC.ClientSecret == "" {
-		public = true
-	}
-	if public {
+	// A public client (e.g. Keycloak "Client authentication: Off") sends client_id in
+	// the request body and no client_secret.
+	clientSecret := p.Client.Secret
+	if p.Client.Public() {
 		authStyle = oauth2.AuthStyleInParams
-		if cfg.OIDC.ClientSecret != "" {
-			log.Warn().Msg("authMethod is \"none\": ignoring configured clientSecret")
+		if clientSecret != "" {
+			log.Warn().Msg("client method is \"none\": ignoring configured client secret")
 		}
-	}
-
-	clientSecret := cfg.OIDC.ClientSecret
-	if public {
 		clientSecret = ""
 	}
 
 	oauth2Config := &oauth2.Config{
-		ClientID:     cfg.OIDC.ClientID,
+		ClientID:     p.ClientID,
 		ClientSecret: clientSecret,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:   provider.Endpoint().AuthURL,
-			TokenURL:  provider.Endpoint().TokenURL,
-			AuthStyle: authStyle, // Set AuthStyle here
+			AuthURL:       provider.Endpoint().AuthURL,
+			TokenURL:      provider.Endpoint().TokenURL,
+			DeviceAuthURL: provider.Endpoint().DeviceAuthURL,
+			AuthStyle:     authStyle,
 		},
-		Scopes: cfg.OIDC.Scopes,
+		Scopes: p.Scopes,
 	}
 
 	return &Client{
-		cfg:          cfg,
+		profile:      p,
 		provider:     provider,
 		oauth2Config: oauth2Config,
 		httpClient:   httpClient,
-		public:       public,
 	}, nil
 }
 
@@ -94,30 +89,22 @@ func (c *Client) withHTTPClient(ctx context.Context) context.Context {
 	return oidc.ClientContext(ctx, c.httpClient)
 }
 
-func (c *Client) GetToken(ctx context.Context, username, password string) (*oauth2.Token, error) {
+// GetToken runs the flow of the profile to get a new token.
+func (c *Client) GetToken(ctx context.Context) (*oauth2.Token, error) {
 	ctx = c.withHTTPClient(ctx)
-
-	// Use config credentials if provided, otherwise fallback to args or client credentials
-	user := username
-	pass := password
-	if user == "" {
-		user = c.cfg.User.Username
-	}
-	if pass == "" {
-		pass = c.cfg.User.Password
-	}
 
 	var token *oauth2.Token
 	var err error
 
-	if user != "" && pass != "" {
+	switch flow := c.profile.Flow; flow.Type {
+	case config.FlowPassword:
 		log.Info().Str("grant_type", "password").Msg("Using Resource Owner Password Credentials flow")
-		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, user, pass)
-	} else if c.public {
-		return nil, fmt.Errorf("public client (no client secret) requires username and password: client_credentials flow is not available")
-	} else {
+		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, flow.Username, flow.Password)
+	case config.FlowClientCredentials:
+		if c.profile.Client.Public() {
+			return nil, errors.New("public client (no client secret): the client_credentials flow is not available")
+		}
 		log.Info().Str("grant_type", "client_credentials").Msg("Using Client Credentials flow")
-		// For client credentials, we need to create a clientcredentials.Config
 		ccConfig := clientcredentials.Config{
 			ClientID:     c.oauth2Config.ClientID,
 			ClientSecret: c.oauth2Config.ClientSecret,
@@ -125,8 +112,9 @@ func (c *Client) GetToken(ctx context.Context, username, password string) (*oaut
 			Scopes:       c.oauth2Config.Scopes,
 			AuthStyle:    c.oauth2Config.Endpoint.AuthStyle,
 		}
-		// The clientcredentials.Config should use the http client set in the context
 		token, err = ccConfig.Token(ctx)
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrFlowNotSupported, flow.Type)
 	}
 
 	if err != nil {
@@ -135,7 +123,7 @@ func (c *Client) GetToken(ctx context.Context, username, password string) (*oaut
 
 	// Validate ID Token if present
 	if idTokenRaw, ok := token.Extra("id_token").(string); ok && idTokenRaw != "" {
-		verifier := c.provider.Verifier(&oidc.Config{ClientID: c.cfg.OIDC.ClientID})
+		verifier := c.provider.Verifier(&oidc.Config{ClientID: c.profile.ClientID})
 		idToken, err := verifier.Verify(ctx, idTokenRaw)
 		if err != nil {
 			log.Warn().Err(err).Msg("failed to verify ID token")

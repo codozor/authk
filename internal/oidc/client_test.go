@@ -65,13 +65,11 @@ func TestClient_GetToken(t *testing.T) {
 	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
-	cfg := &config.Config{
-		OIDC: config.OIDCConfig{
-			IssuerURL:    testServer.URL,
-			ClientID:     "client",
-			ClientSecret: "secret",
-			AuthMethod:   "client_secret_basic",
-		},
+	cfg := &config.Profile{
+		IssuerURL: testServer.URL,
+		ClientID:  "client",
+		Client:    config.Client{Method: config.MethodClientSecretBasic, Secret: "secret"},
+		Flow:      config.Flow{Type: config.FlowClientCredentials},
 	}
 
 	client, err := NewClient(cfg)
@@ -79,7 +77,7 @@ func TestClient_GetToken(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken(context.Background(), "", "")
+	token, err := client.GetToken(context.Background())
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -135,13 +133,11 @@ func TestClient_GetToken_Password(t *testing.T) {
 	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
-	cfg := &config.Config{
-		OIDC: config.OIDCConfig{
-			IssuerURL:    testServer.URL,
-			ClientID:     "client",
-			ClientSecret: "secret",
-			AuthMethod:   "client_secret_basic",
-		},
+	cfg := &config.Profile{
+		IssuerURL: testServer.URL,
+		ClientID:  "client",
+		Client:    config.Client{Method: config.MethodClientSecretBasic, Secret: "secret"},
+		Flow:      config.Flow{Type: config.FlowPassword, Username: "testuser", Password: "testpass"},
 	}
 
 	client, err := NewClient(cfg)
@@ -149,7 +145,7 @@ func TestClient_GetToken_Password(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken(context.Background(), "testuser", "testpass")
+	token, err := client.GetToken(context.Background())
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -198,13 +194,11 @@ func TestClient_GetToken_IDToken(t *testing.T) {
 	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
-	cfg := &config.Config{
-		OIDC: config.OIDCConfig{
-			IssuerURL:    testServer.URL,
-			ClientID:     "client",
-			ClientSecret: "secret",
-			AuthMethod:   "client_secret_basic",
-		},
+	cfg := &config.Profile{
+		IssuerURL: testServer.URL,
+		ClientID:  "client",
+		Client:    config.Client{Method: config.MethodClientSecretBasic, Secret: "secret"},
+		Flow:      config.Flow{Type: config.FlowClientCredentials},
 	}
 
 	client, err := NewClient(cfg)
@@ -212,7 +206,7 @@ func TestClient_GetToken_IDToken(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	token, err := client.GetToken(context.Background(), "", "")
+	token, err := client.GetToken(context.Background())
 	if err != nil {
 		t.Fatalf("GetToken() error = %v", err)
 	}
@@ -272,13 +266,11 @@ func TestClient_RefreshToken(t *testing.T) {
 	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
-	cfg := &config.Config{
-		OIDC: config.OIDCConfig{
-			IssuerURL:    testServer.URL,
-			ClientID:     "client",
-			ClientSecret: "secret",
-			AuthMethod:   "client_secret_basic",
-		},
+	cfg := &config.Profile{
+		IssuerURL: testServer.URL,
+		ClientID:  "client",
+		Client:    config.Client{Method: config.MethodClientSecretBasic, Secret: "secret"},
+		Flow:      config.Flow{Type: config.FlowClientCredentials},
 	}
 
 	client, err := NewClient(cfg)
@@ -355,14 +347,13 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
-	for _, authMethod := range []string{"none", "basic"} {
+	for _, authMethod := range []string{config.MethodNone, config.MethodClientSecretBasic} {
 		t.Run(authMethod, func(t *testing.T) {
-			cfg := &config.Config{
-				OIDC: config.OIDCConfig{
-					IssuerURL:  testServer.URL,
-					ClientID:   "public-client",
-					AuthMethod: authMethod,
-				},
+			cfg := &config.Profile{
+				IssuerURL: testServer.URL,
+				ClientID:  "public-client",
+				Client:    config.Client{Method: authMethod},
+				Flow:      config.Flow{Type: config.FlowPassword, Username: "testuser", Password: "testpass"},
 			}
 
 			client, err := NewClient(cfg)
@@ -370,7 +361,7 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 				t.Fatalf("NewClient() error = %v", err)
 			}
 
-			token, err := client.GetToken(context.Background(), "testuser", "testpass")
+			token, err := client.GetToken(context.Background())
 			if err != nil {
 				t.Fatalf("GetToken() error = %v", err)
 			}
@@ -379,8 +370,9 @@ func TestClient_GetToken_PublicClient(t *testing.T) {
 			}
 
 			// client_credentials is not possible without a secret
-			if _, err := client.GetToken(context.Background(), "", ""); err == nil {
-				t.Error("expected error for public client without user credentials")
+			cfg.Flow = config.Flow{Type: config.FlowClientCredentials}
+			if _, err := client.GetToken(context.Background()); err == nil {
+				t.Error("expected error for public client with the client_credentials flow")
 			}
 		})
 	}
@@ -433,9 +425,10 @@ func TestClient_RefreshToken_StillValidToken(t *testing.T) {
 	calls := 0
 	srv := newRefreshTestServer(t, &calls)
 
-	client, err := NewClient(&config.Config{OIDC: config.OIDCConfig{
-		IssuerURL: srv.URL, ClientID: "client", ClientSecret: "secret",
-	}})
+	client, err := NewClient(&config.Profile{
+		IssuerURL: srv.URL, ClientID: "client",
+		Client: config.Client{Secret: "secret"}, Flow: config.Flow{Type: config.FlowClientCredentials},
+	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -466,9 +459,10 @@ func TestClient_RefreshToken_NoRefreshToken(t *testing.T) {
 	calls := 0
 	srv := newRefreshTestServer(t, &calls)
 
-	client, err := NewClient(&config.Config{OIDC: config.OIDCConfig{
-		IssuerURL: srv.URL, ClientID: "client", ClientSecret: "secret",
-	}})
+	client, err := NewClient(&config.Profile{
+		IssuerURL: srv.URL, ClientID: "client",
+		Client: config.Client{Secret: "secret"}, Flow: config.Flow{Type: config.FlowClientCredentials},
+	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -479,5 +473,19 @@ func TestClient_RefreshToken_NoRefreshToken(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Errorf("expected no call to the token endpoint, got %d", calls)
+	}
+}
+
+func TestClient_GetToken_UnsupportedFlow(t *testing.T) {
+	calls := 0
+	srv := newRefreshTestServer(t, &calls)
+	client, err := NewClient(&config.Profile{
+		IssuerURL: srv.URL, ClientID: "client", Flow: config.Flow{Type: config.FlowDeviceCode},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if _, err := client.GetToken(context.Background()); !errors.Is(err, ErrFlowNotSupported) {
+		t.Errorf("expected ErrFlowNotSupported, got %v", err)
 	}
 }
