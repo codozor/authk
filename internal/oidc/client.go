@@ -36,29 +36,29 @@ func NewClient(p *config.Profile) (*Client, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	ctx := oidc.ClientContext(context.Background(), httpClient)
 
-	provider, err := oidc.NewProvider(ctx, p.IssuerURL)
+	provider, err := oidc.NewProvider(ctx, p.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC provider: %w", err)
 	}
 
 	var authStyle oauth2.AuthStyle
-	switch p.Client.Method {
-	case config.MethodNone:
-	case config.MethodClientSecretPost:
+	switch p.ClientAuth {
+	case config.AuthNone:
+	case config.AuthPost:
 		authStyle = oauth2.AuthStyleInParams
-	case config.MethodClientSecretBasic, "":
+	case config.AuthBasic, "":
 		authStyle = oauth2.AuthStyleInHeader
 	default:
-		return nil, fmt.Errorf("unsupported client authentication method: %s", p.Client.Method)
+		return nil, fmt.Errorf("unsupported clientAuth: %s", p.ClientAuth)
 	}
 
 	// A public client (e.g. Keycloak "Client authentication: Off") sends client_id in
 	// the request body and no client_secret.
-	clientSecret := p.Client.Secret
-	if p.Client.Public() {
+	clientSecret := p.ClientSecret
+	if p.Public() {
 		authStyle = oauth2.AuthStyleInParams
 		if clientSecret != "" {
-			log.Warn().Msg("client method is \"none\": ignoring configured client secret")
+			log.Warn().Msg("clientAuth is \"none\": ignoring configured clientSecret")
 		}
 		clientSecret = ""
 	}
@@ -96,12 +96,12 @@ func (c *Client) GetToken(ctx context.Context) (*oauth2.Token, error) {
 	var token *oauth2.Token
 	var err error
 
-	switch flow := c.profile.Flow; flow.Type {
+	switch p := c.profile; p.Flow {
 	case config.FlowPassword:
 		log.Info().Str("grant_type", "password").Msg("Using Resource Owner Password Credentials flow")
-		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, flow.Username, flow.Password)
+		token, err = c.oauth2Config.PasswordCredentialsToken(ctx, p.Username, p.Password)
 	case config.FlowClientCredentials:
-		if c.profile.Client.Public() {
+		if p.Public() {
 			return nil, errors.New("public client (no client secret): the client_credentials flow is not available")
 		}
 		log.Info().Str("grant_type", "client_credentials").Msg("Using Client Credentials flow")
@@ -114,7 +114,7 @@ func (c *Client) GetToken(ctx context.Context) (*oauth2.Token, error) {
 		}
 		token, err = ccConfig.Token(ctx)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrFlowNotSupported, flow.Type)
+		return nil, fmt.Errorf("%w: %s", ErrFlowNotSupported, p.Flow)
 	}
 
 	if err != nil {

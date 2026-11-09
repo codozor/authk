@@ -139,6 +139,9 @@ func (m *Manager) writeLines(lines []string) error {
 		mode = info.Mode().Perm()
 	}
 
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		return fmt.Errorf("directory %s does not exist", filepath.Dir(path))
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".authk-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary .env file: %w", err)

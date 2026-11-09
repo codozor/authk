@@ -8,43 +8,29 @@ defaultProfile?: string
 profiles: [string]: #Profile
 
 #Profile: {
-	issuerUrl: string
-	clientId:  string
-	client:    #Client
-	flow:      #ClientCredentials | #Password | #DeviceCode
-	scopes:    [...string] | *["openid", "profile", "email"]
-	// Keys written to the --env file when the profile has no targets
-	envKeys:  #EnvKeys
+	issuer:   string
+	clientId: string
+	// Absent for a public client (Keycloak "Client authentication: Off")
+	clientSecret?: string
+	// How the client secret is sent: HTTP Basic header, or request body
+	clientAuth: *"basic" | "post" | "none"
+
+	flow: "client_credentials" | "password" | "device_code"
+	if flow == "password" {
+		username: string
+		password: string
+	}
+
+	scopes: [...string] | *["openid", "profile", "email"]
+
+	// Files to write the tokens to. Without targets, nothing is written: tokens
+	// are only available through "authk get" (and the agent).
 	targets?: [...#Target]
 }
 
-#Client: {
-	method: *"client_secret_basic" | "client_secret_post" | "none"
-	// Empty for a public client
-	secret: string | *""
-}
-
-#ClientCredentials: {
-	type: "client_credentials"
-}
-
-#Password: {
-	type:     "password"
-	username: string
-	password: string
-}
-
-#DeviceCode: {
-	type: "device_code"
-}
-
-#EnvKeys: {
-	accessToken: string | *"TOKEN"
-	idToken:     string | *""
-}
-
 #Target: {
-	file: string
-	key:  string
-	type: *"access_token" | "id_token"
+	// Without file: the .env file found from the current directory, or --env
+	file?: string
+	key:   string
+	type:  *"access_token" | "id_token"
 }

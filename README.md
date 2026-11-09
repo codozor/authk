@@ -13,8 +13,8 @@
 
 ## Features
 
-- **OIDC Integration**: Client Credentials and Resource Owner Password Credentials flows, with an explicit `flow` per profile.
-- **Profiles**: several identities (realms, clients, users) in a single config file.
+- **OIDC Integration**: Client Credentials and Resource Owner Password Credentials flows, for Keycloak, Authentik or any OIDC provider.
+- **Profiles**: several identities (realms, clients, users) in a single config file, with or without files to write.
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
 - **.env Management**: updates keys of `.env` files with the new tokens.
 - **Configurable**: uses CUE for flexible and type-safe configuration, with secrets from env, files, SOPS or Kubernetes.
@@ -35,7 +35,11 @@ go build -o authk ./cmd/authk
 
 ## Configuration
 
-`authk` uses a CUE configuration file (default: `authk.cue`) holding one or more **profiles**. Each profile is an OIDC client, the **flow** used to get its tokens, and the files to write them to.
+`authk` uses a CUE configuration file (default: `authk.cue`) holding one or more **profiles**. A profile says:
+
+- **which client** asks for tokens: `issuer`, `clientId`, `clientSecret`;
+- **how** it gets them: `flow`, with the fields of that flow;
+- **where** to write them: `targets` (optional).
 
 ```cue
 package config
@@ -43,68 +47,75 @@ package config
 version: 2
 
 profiles: dev: {
-	issuerUrl: "https://kc.example.com/realms/dev"
-	clientId:  "my-client"
-	client: {
-		method: "client_secret_basic" // or "client_secret_post", or "none" for a public client
-		secret: "ref+env://KC_CLIENT_SECRET"
-	}
-	flow: type: "client_credentials"
-	// scopes: ["openid", "profile", "email"] // default
-	targets: [{file: ".env", key: "TOKEN"}]
+	issuer:       "https://kc.example.com/realms/dev"
+	clientId:     "my-service"
+	clientSecret: "ref+env://KC_CLIENT_SECRET"
+	flow:         "client_credentials"
+	targets: [{key: "TOKEN"}] // TOKEN=... in the .env file of the project
 }
 ```
 
+### Profile fields
+
+| Field | Required | Description |
+|---|---|---|
+| `issuer` | yes | Issuer URL of the realm / application (OIDC discovery is done from it). |
+| `clientId` | yes | Client ID registered in the identity provider. |
+| `clientSecret` | no | Client secret. Absent: **public client** (Keycloak *Client authentication: Off*). |
+| `clientAuth` | no | How the secret is sent: `basic` (HTTP Basic header, default), `post` (request body), or `none` (public client, the secret is ignored). |
+| `flow` | yes | How tokens are obtained, see below. |
+| `scopes` | no | Default: `["openid", "profile", "email"]`. |
+| `targets` | no | Files to write the tokens to. Absent: nothing is written. |
+
 ### Flows
 
-| `flow.type` | Fields | Notes |
-|---|---|---|
-| `client_credentials` | — | Requires a client secret. |
-| `password` | `username`, `password` | Resource Owner Password Credentials. Keycloak: enable *Direct access grants* on the client. |
-| `device_code` | — | Accepted in the config; not implemented yet. |
+| `flow` | Extra fields | Use it for | Notes |
+|---|---|---|---|
+| `client_credentials` | — | A service, CI, or machine-to-machine access | Requires `clientSecret`. |
+| `password` | `username`, `password` | A user, non-interactively | Keycloak: enable *Direct access grants* on the client. |
+| `device_code` | — | A user, logging in through the browser | Accepted in the config; not implemented yet. |
 
-### Profiles
+Extra fields are only allowed with their flow: `username` is rejected with `client_credentials`, so a typo or a leftover field is reported when the file is loaded.
 
-```cue
-version: 2
-defaultProfile: "dev" // optional
+Why `clientSecret` and `flow` are separate: the client secret authenticates the *application* on every call to the token endpoint, refreshes included, whatever the flow; the flow says how the *identity* is obtained. They combine freely, except `client_credentials`, which needs a secret.
 
-profiles: dev: { ... }
-profiles: prod: { ... }
-```
-
-The profile is chosen with `--profile` (`-p`), else `$AUTHK_PROFILE`, else `defaultProfile`, else the only profile of the file. `authk config profiles` lists them.
-
-Secrets are resolved only for the selected profile: a `prod` secret stored in Kubernetes is not read when you use `dev`.
-
-### Writing tokens
+### Targets
 
 Each target writes a token to a key of a file:
 
 ```cue
 targets: [
-	{file: ".env", key: "MY_ACCESS_TOKEN"}, // type: "access_token" by default
-	{file: ".env", key: "MY_ID_TOKEN", type: "id_token"},
-	{file: "apps/frontend/.env", key: "API_TOKEN"},
+	{key: "TOKEN"},                                   // the project .env file
+	{key: "ID_TOKEN", type: "id_token"},              // type: "access_token" by default
+	{file: "apps/frontend/.env.local", key: "VITE_API_TOKEN"},
 ]
 ```
 
-Relative `file` paths are resolved against the directory of the configuration file, so running `authk` from a subdirectory updates the same files.
-
-Without `targets`, the token is written to the `.env` file found from the current directory (see [File Discovery](#file-discovery)) or given with `--env`, under the keys of `envKeys`:
-
-```cue
-envKeys: {
-	accessToken: "TOKEN" // default
-	idToken:     "ID_TOKEN" // optional
-}
-```
+- **With `file`**: the path is relative to the directory of the configuration file, so running `authk` from a subdirectory updates the same file. The directory must exist.
+- **Without `file`**: the `.env` file of the project, found from the current directory (see [File Discovery](#file-discovery)) or given with `--env`.
+- **No `targets` at all**: nothing is written. The profile is used through `authk get` only, and with an agent the token stays in memory: nothing on disk.
 
 `.env` files are written atomically (temporary file + rename): readers never see a partially written file. An existing file keeps its permissions and a symlink is followed; a file created by `authk` gets `0600` permissions since it holds a token.
 
+### Profiles
+
+A file can hold several profiles: one per realm, environment, client or user.
+
+```cue
+version: 2
+defaultProfile: "dev" // optional
+
+profiles: dev:  { ... }
+profiles: prod: { ... }
+```
+
+The profile is chosen with `--profile` (`-p`), else `$AUTHK_PROFILE`, else `defaultProfile`, else the only profile of the file. `authk config profiles` lists them and marks the one that would be used.
+
+Secrets are resolved only for the selected profile: a `prod` secret stored in Kubernetes is not read when you use `dev`.
+
 ### Version 1 files
 
-Files without `version` (the format of authk 1.x) keep working: they are converted in memory into a single profile named `default`. To rewrite such a file in the version 2 format:
+Files without `version` (the format of authk 1.x) keep working: they are converted in memory into a single profile named `default`, and `tokenKey` / `idTokenKey` become targets without `file`. To rewrite such a file in the version 2 format:
 
 ```bash
 authk config migrate --dry-run  # print the result
@@ -115,47 +126,81 @@ Comments are not kept; secret references are copied as they are, never resolved.
 
 ## Configuration Examples
 
-### Keycloak (password flow)
+### A project: service token in `.env`, personal token on demand
 
 ```cue
 package config
 
 version: 2
+defaultProfile: "app"
 
+// Token of the application, written to the project .env and to the frontend
+profiles: app: {
+	issuer:       "https://keycloak.example.com/realms/myrealm"
+	clientId:     "my-app"
+	clientSecret: "ref+env://APP_CLIENT_SECRET"
+	flow:         "client_credentials"
+	targets: [
+		{key: "API_TOKEN"},
+		{file: "frontend/.env.local", key: "VITE_API_TOKEN"},
+	]
+}
+
+// My own token, never written to disk: authk get -p me
+profiles: me: {
+	issuer:   "https://keycloak.example.com/realms/myrealm"
+	clientId: "my-cli" // public client
+	flow:     "password"
+	username: "alice"
+	password: "ref+env://KC_PASSWORD"
+}
+```
+
+```bash
+authk agent -d                    # keeps API_TOKEN up to date
+authk agent -d -p me              # keeps my token in memory
+curl -H "Authorization: Bearer $(authk get -p me)" https://api.example.com/me
+```
+
+### Keycloak (confidential client, password flow)
+
+```cue
 profiles: dev: {
-	issuerUrl: "https://keycloak.example.com/realms/myrealm"
-	clientId:  "my-client"
-	client: secret: "ref+env://KC_CLIENT_SECRET"
-	flow: {
-		type:     "password"
-		username: "myuser"
-		password: "ref+env://KC_PASSWORD"
-	}
+	issuer:       "https://keycloak.example.com/realms/myrealm"
+	clientId:     "my-client"
+	clientSecret: "ref+env://KC_CLIENT_SECRET"
+	flow:         "password"
+	username:     "myuser"
+	password:     "ref+env://KC_PASSWORD"
+	targets: [{key: "TOKEN"}, {key: "ID_TOKEN", type: "id_token"}]
 }
 ```
 
 ### Keycloak (public client)
 
-For a Keycloak client with *Client authentication* turned off, set `method: "none"` (or omit the secret). The `client_id` is then sent in the request body without secret. A public client cannot use the Client Credentials flow, and *Direct access grants* must be enabled for the password flow.
+For a Keycloak client with *Client authentication* turned off, omit `clientSecret`: the `client_id` is then sent in the request body without secret. A public client cannot use `client_credentials`, and *Direct access grants* must be enabled for the `password` flow.
 
 ```cue
 profiles: dev: {
-	issuerUrl: "https://keycloak.example.com/realms/myrealm"
-	clientId:  "my-public-client"
-	client: method: "none"
-	flow: {type: "password", username: "myuser", password: "ref+env://KC_PASSWORD"}
+	issuer:   "https://keycloak.example.com/realms/myrealm"
+	clientId: "my-public-client"
+	flow:     "password"
+	username: "myuser"
+	password: "ref+env://KC_PASSWORD"
 }
 ```
 
-### Authentik
+### Authentik (machine-to-machine)
 
 ```cue
-profiles: dev: {
-	issuerUrl: "https://authentik.example.com/application/o/my-app/"
-	clientId:  "my-client-id"
-	client: secret: "ref+env://AUTHENTIK_CLIENT_SECRET"
-	flow: type: "client_credentials"
+profiles: api: {
+	issuer:       "https://authentik.example.com/application/o/my-app/"
+	clientId:     "my-client-id"
+	clientSecret: "ref+env://AUTHENTIK_CLIENT_SECRET"
+	clientAuth:   "post"
+	flow:         "client_credentials"
 	scopes: ["openid", "profile", "email", "goauthentik.io/api"]
+	targets: [{key: "AUTHENTIK_TOKEN"}]
 }
 ```
 
@@ -170,9 +215,9 @@ Supported schemes:
 *   `ref+k8s://v1/Secret/<namespace>/<name>/<key>` - Kubernetes Secrets (`?kubeContext=...` to choose a context)
 
 ```cue
-client: secret: "ref+env://OIDC_CLIENT_SECRET"
-client: secret: "ref+file:///path/to/secret_file"
-flow: password: "ref+k8s://v1/Secret/default/my-secret/password"
+clientSecret: "ref+env://OIDC_CLIENT_SECRET"
+clientSecret: "ref+file:///path/to/secret_file"
+password:     "ref+k8s://v1/Secret/default/my-secret/password"
 ```
 
 ## File Discovery
@@ -186,7 +231,7 @@ The configuration file (`authk.cue`) is searched in the following order:
 
 This allows you to run `authk` from any subdirectory within your project or rely on a global configuration in your home directory.
 
-When the config has no `targets`, the `.env` file is found as follows:
+For targets without `file`, the `.env` file is found as follows:
 
 - **Explicit path** (`--env front/.env`): used as is, relative to the current directory.
 - **Project config** (not in the home directory root): searched from the current directory up to the config directory, never above. If none is found, it is created next to the config.
@@ -198,7 +243,7 @@ When the config has no `targets`, the `.env` file is found as follows:
 
 ### Agent (Long-running)
 
-This is the main mode. The agent fetches a token, updates the `.env` file (or the configured targets), and keeps running to renew the token before it expires. It stops cleanly on `Ctrl+C` or `SIGTERM`.
+This is the main mode. The agent fetches a token, writes it to the profile targets, and keeps running to renew it before it expires. It stops cleanly on `Ctrl+C` or `SIGTERM`. For a profile without targets, the agent only keeps the token in memory for `authk get`.
 
 ```bash
 ./authk agent             # in the foreground
@@ -207,7 +252,7 @@ This is the main mode. The agent fetches a token, updates the `.env` file (or th
 
 While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
 
-An agent serves one profile of a config file, and one `.env` file when the profile has no `targets` (`--env` is ignored, with a warning, when the profile defines `targets`). Several agents can run at the same time; a second agent for the same files is refused.
+An agent serves one profile of a config file, and one `.env` file when a target has no `file` (`--env` is ignored, with a warning, when no target writes the `.env` file). Several agents can run at the same time; a second agent for the same profile and files is refused.
 
 ```bash
 ./authk agent list          # list running agents (alias: ls, --json available)
@@ -222,10 +267,10 @@ Without ID, these commands act on the agent serving the current directory. An ID
 
 ```
 $ authk agent list
-ID                 PID    STARTED           TOKEN  MODE        CONFIG                 WRITES
-281028a4-b3def358  31337  2026-11-06 09:12  4m12s  detached    ~/dev/app/authk.cue    ~/dev/app/front/.env
-281028a4-05a23f95  31420  2026-11-06 09:13  4m30s  detached    ~/dev/app/authk.cue    ~/dev/app/back/.env
-d4a4eba5           31502  2026-11-06 09:30  1m58s  foreground  ~/dev/other/authk.cue  ~/dev/other/out/.env
+ID                 PID    STARTED           TOKEN  MODE        CONFIG                 PROFILE  WRITES
+281028a4-b3def358  31337  2026-11-06 09:12  4m12s  detached    ~/dev/app/authk.cue    app      ~/dev/app/.env, ~/dev/app/frontend/.env.local
+9c41e0d2           31420  2026-11-06 09:13  4m30s  detached    ~/dev/app/authk.cue    me       -
+d4a4eba5           31502  2026-11-06 09:30  1m58s  foreground  ~/dev/other/authk.cue  default  ~/dev/other/.env
 ```
 
 `--detach` returns once the agent has its first token, or prints its log if it fails to start. Logs of detached agents are written to `$XDG_STATE_HOME/authk/logs` (default `~/.local/state/authk/logs`) and kept 7 days.
@@ -237,7 +282,7 @@ Sockets and registrations live in `$XDG_RUNTIME_DIR/authk/` (or a private direct
 **Flags:**
 - `--config`: Path to config file (default: `authk.cue`)
 - `--profile`, `-p`: Profile to use (default: `$AUTHK_PROFILE`, `defaultProfile`, or the only profile)
-- `--env`: Path to .env file (default: `.env`), when the profile has no `targets`
+- `--env`: Path to the .env file written by targets without `file` (default: `.env`)
 - `--detach`, `-d`: Run in the background
 - `--debug`: Enable debug logging
 
@@ -250,9 +295,17 @@ Prints a valid token to stdout. Useful for piping to other commands.
 curl -H "Authorization: Bearer $(./authk get)" https://api.example.com
 ```
 
-If an agent serves the config, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
+`get` works with any profile, with or without targets:
 
-When several agents serve the config (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent.
+```bash
+authk get              # default profile
+authk get -p me        # another profile
+authk get --id-token   # the ID Token instead of the Access Token
+```
+
+If an agent serves the profile, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
+
+When several agents serve the profile (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent.
 
 **Flags:**
 - `--id-token`: Print ID Token instead of Access Token

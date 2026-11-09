@@ -152,17 +152,17 @@ func runAgent(parent context.Context, envChanged bool) error {
 		return err
 	}
 	resolveEnvFile()
-	if envChanged && len(profile.Targets) > 0 {
-		log.Warn().Msg("--env is ignored: the profile defines targets")
+	if envChanged && !profile.UsesEnvFile() {
+		log.Warn().Str("profile", profile.Name).Msg("--env is ignored: no target of the profile writes to the .env file")
 	}
 
-	// The agent identity: the config and profile, and the .env file only when it is the target
+	// The agent identity: the config and profile, and the .env file only when a target writes it
 	configPath, err := agent.CanonicalPath(cfgFile)
 	if err != nil {
 		return err
 	}
 	envKey := ""
-	if len(profile.Targets) == 0 {
+	if profile.UsesEnvFile() {
 		if envKey, err = agent.CanonicalPath(envFile); err != nil {
 			return err
 		}
@@ -222,7 +222,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 		LogFile:    entry.LogFile,
 		ConfigPath: configPath,
 		Profile:    profile.Name,
-		Issuer:     profile.IssuerURL,
+		Issuer:     profile.Issuer,
 		ClientID:   profile.ClientID,
 	}
 	for _, t := range targets {
@@ -242,18 +242,30 @@ func runAgent(parent context.Context, envChanged bool) error {
 	return nil
 }
 
-// buildTargets returns the profile targets, or the default ones written to --env.
+// buildTargets returns the profile targets, with the .env file (found from the current
+// directory, or --env) for targets without file. resolveEnvFile must have been called.
 func buildTargets(p *config.Profile) []config.Target {
-	if len(p.Targets) > 0 {
-		log.Info().Int("count", len(p.Targets)).Str("profile", p.Name).Msg("Configured with multiple targets")
-		return p.Targets
+	targets := resolveTargets(p)
+	if len(targets) == 0 {
+		log.Info().Str("profile", p.Name).Msg("No targets: the token is only served by the agent (authk get)")
+		return nil
 	}
+	for _, t := range targets {
+		log.Info().Str("file", t.File).Str("key", t.Key).Str("type", t.Type).Msg("Target")
+	}
+	return targets
+}
 
-	targets := []config.Target{{File: envFile, Key: p.EnvKeys.AccessToken, Type: agent.TypeAccessToken}}
-	if p.EnvKeys.IDToken != "" {
-		targets = append(targets, config.Target{File: envFile, Key: p.EnvKeys.IDToken, Type: agent.TypeIDToken})
+// resolveTargets returns the profile targets with the .env file set on targets
+// without file. resolveEnvFile must have been called.
+func resolveTargets(p *config.Profile) []config.Target {
+	targets := make([]config.Target, 0, len(p.Targets))
+	for _, t := range p.Targets {
+		if t.File == "" {
+			t.File = envFile
+		}
+		targets = append(targets, t)
 	}
-	log.Info().Str("env_file", envFile).Msg("Configured with default targets")
 	return targets
 }
 

@@ -41,11 +41,11 @@ const (
 	FlowDeviceCode        = "device_code"
 )
 
-// Client authentication methods.
+// Client authentication methods (clientAuth).
 const (
-	MethodClientSecretBasic = "client_secret_basic"
-	MethodClientSecretPost  = "client_secret_post"
-	MethodNone              = "none"
+	AuthBasic = "basic"
+	AuthPost  = "post"
+	AuthNone  = "none"
 )
 
 // Target types.
@@ -66,45 +66,40 @@ type Config struct {
 
 // Profile is one identity: an OIDC client, how to get its tokens and where to write them.
 type Profile struct {
-	Name      string   `json:"-"`
-	IssuerURL string   `json:"issuerUrl"`
-	ClientID  string   `json:"clientId"`
-	Client    Client   `json:"client"`
-	Flow      Flow     `json:"flow"`
-	Scopes    []string `json:"scopes"`
-	EnvKeys   EnvKeys  `json:"envKeys"`
-	Targets   []Target `json:"targets,omitempty"`
-}
-
-// Client is how the client authenticates to the token endpoint.
-type Client struct {
-	Method string `json:"method"`
-	Secret string `json:"secret"`
+	Name         string   `json:"-"`
+	Issuer       string   `json:"issuer"`
+	ClientID     string   `json:"clientId"`
+	ClientSecret string   `json:"clientSecret,omitempty"`
+	ClientAuth   string   `json:"clientAuth"`
+	Flow         string   `json:"flow"`
+	Username     string   `json:"username,omitempty"` // password flow
+	Password     string   `json:"password,omitempty"` // password flow
+	Scopes       []string `json:"scopes"`
+	Targets      []Target `json:"targets,omitempty"`
 }
 
 // Public reports whether the client has no secret (Keycloak "Client authentication: Off").
-func (c Client) Public() bool {
-	return c.Method == MethodNone || c.Secret == ""
+func (p *Profile) Public() bool {
+	return p.ClientAuth == AuthNone || p.ClientSecret == ""
 }
 
-// Flow is how tokens are obtained.
-type Flow struct {
-	Type     string `json:"type"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-}
-
-// EnvKeys are the keys written to the --env file when a profile has no targets.
-type EnvKeys struct {
-	AccessToken string `json:"accessToken"`
-	IDToken     string `json:"idToken"`
-}
-
-// Target is a key of a file to update with a token.
+// Target is a key of a file to update with a token. An empty File means the .env
+// file found from the current directory, or given with --env.
 type Target struct {
-	File string `json:"file"`
+	File string `json:"file,omitempty"`
 	Key  string `json:"key"`
 	Type string `json:"type"`
+}
+
+// UsesEnvFile reports whether a target writes to the .env file found from the
+// current directory (or --env).
+func (p *Profile) UsesEnvFile() bool {
+	for _, t := range p.Targets {
+		if t.File == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Path returns the file the config was loaded from.
@@ -243,19 +238,19 @@ func (c *Config) Profile(name string) (*Profile, error) {
 // validate checks what the schema cannot: values that come from secrets, and
 // combinations of fields.
 func (p *Profile) validate() error {
-	if p.IssuerURL == "" {
-		return errors.New("issuerUrl is empty")
+	if p.Issuer == "" {
+		return errors.New("issuer is empty")
 	}
 	if p.ClientID == "" {
 		return errors.New("clientId is empty")
 	}
-	switch p.Flow.Type {
+	switch p.Flow {
 	case FlowClientCredentials:
-		if p.Client.Public() {
+		if p.Public() {
 			return errors.New("the client_credentials flow requires a client secret (public client)")
 		}
 	case FlowPassword:
-		if p.Flow.Username == "" || p.Flow.Password == "" {
+		if p.Username == "" || p.Password == "" {
 			return errors.New("the password flow requires a username and a password")
 		}
 	}
@@ -307,6 +302,9 @@ func (p *Profile) resolveTargetPaths(configPath string) error {
 	}
 	baseDir := filepath.Dir(absConfig)
 	for i, t := range p.Targets {
+		if t.File == "" {
+			continue // the .env file found at runtime
+		}
 		if filepath.IsAbs(t.File) {
 			p.Targets[i].File = filepath.Clean(t.File)
 		} else {

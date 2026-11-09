@@ -24,44 +24,43 @@ func Render(c *Config) ([]byte, error) {
 	for _, name := range c.ProfileNames() {
 		p := c.Profiles[name]
 		fmt.Fprintf(&b, "\nprofiles: %s: {\n", label(name))
-		fmt.Fprintf(&b, "issuerUrl: %s\n", quote(p.IssuerURL))
+		fmt.Fprintf(&b, "issuer: %s\n", quote(p.Issuer))
 		fmt.Fprintf(&b, "clientId: %s\n", quote(p.ClientID))
-
-		b.WriteString("client: {\n")
-		fmt.Fprintf(&b, "method: %s\n", quote(p.Client.Method))
-		if p.Client.Secret != "" {
-			fmt.Fprintf(&b, "secret: %s\n", quote(p.Client.Secret))
+		if p.ClientSecret != "" {
+			fmt.Fprintf(&b, "clientSecret: %s\n", quote(p.ClientSecret))
 		}
-		b.WriteString("}\n")
-
-		b.WriteString("flow: {\n")
-		fmt.Fprintf(&b, "type: %s\n", quote(p.Flow.Type))
-		if p.Flow.Type == FlowPassword {
-			fmt.Fprintf(&b, "username: %s\n", quote(p.Flow.Username))
-			fmt.Fprintf(&b, "password: %s\n", quote(p.Flow.Password))
+		if p.ClientAuth != "" && p.ClientAuth != AuthBasic {
+			fmt.Fprintf(&b, "clientAuth: %s\n", quote(p.ClientAuth))
 		}
-		b.WriteString("}\n")
 
-		quoted := make([]string, 0, len(p.Scopes))
-		for _, s := range p.Scopes {
-			quoted = append(quoted, quote(s))
+		fmt.Fprintf(&b, "flow: %s\n", quote(p.Flow))
+		if p.Flow == FlowPassword {
+			fmt.Fprintf(&b, "username: %s\n", quote(p.Username))
+			fmt.Fprintf(&b, "password: %s\n", quote(p.Password))
 		}
-		fmt.Fprintf(&b, "scopes: [%s]\n", strings.Join(quoted, ", "))
+
+		if !slices.Equal(p.Scopes, defaultScopes) {
+			quoted := make([]string, 0, len(p.Scopes))
+			for _, s := range p.Scopes {
+				quoted = append(quoted, quote(s))
+			}
+			fmt.Fprintf(&b, "scopes: [%s]\n", strings.Join(quoted, ", "))
+		}
 
 		if len(p.Targets) > 0 {
 			b.WriteString("targets: [\n")
 			for _, t := range p.Targets {
-				fmt.Fprintf(&b, "{file: %s, key: %s, type: %s},\n", quote(t.File), quote(t.Key), quote(t.Type))
+				b.WriteString("{")
+				if t.File != "" {
+					fmt.Fprintf(&b, "file: %s, ", quote(t.File))
+				}
+				fmt.Fprintf(&b, "key: %s", quote(t.Key))
+				if t.Type != "" && t.Type != TargetAccessToken {
+					fmt.Fprintf(&b, ", type: %s", quote(t.Type))
+				}
+				b.WriteString("},\n")
 			}
 			b.WriteString("]\n")
-		} else if !slices.Contains([]EnvKeys{{}, {AccessToken: "TOKEN"}}, p.EnvKeys) {
-			// envKeys are only used without targets; omit the default
-			b.WriteString("envKeys: {\n")
-			fmt.Fprintf(&b, "accessToken: %s\n", quote(p.EnvKeys.AccessToken))
-			if p.EnvKeys.IDToken != "" {
-				fmt.Fprintf(&b, "idToken: %s\n", quote(p.EnvKeys.IDToken))
-			}
-			b.WriteString("}\n")
 		}
 		b.WriteString("}\n")
 	}
@@ -72,6 +71,9 @@ func Render(c *Config) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// defaultScopes are the scopes of the schema default, omitted when rendering.
+var defaultScopes = []string{"openid", "profile", "email"}
 
 // identifier matches names usable as CUE labels without quotes.
 var identifier = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)

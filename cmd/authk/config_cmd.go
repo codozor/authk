@@ -121,7 +121,7 @@ var configProfilesCmd = &cobra.Command{
 			if name == selected {
 				mark = "*"
 			}
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", mark, name, p.Flow.Type, p.ClientID, p.IssuerURL)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", mark, name, p.Flow, p.ClientID, p.Issuer)
 		}
 		if err := w.Flush(); err != nil {
 			return err

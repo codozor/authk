@@ -118,6 +118,9 @@ func printAgentsTable(out io.Writer, agents []agent.Agent) error {
 				files = append(files, tildePath(f, home))
 			}
 			writes = strings.Join(files, ", ")
+			if writes == "" {
+				writes = "-"
+			}
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			a.ID, a.PID, a.StartedAt.Local().Format("2006-01-02 15:04"), token, mode,

@@ -22,32 +22,40 @@ type v1Config struct {
 // convert returns the equivalent version 2 config, with a single "default" profile.
 // Values are copied unresolved: secrets references (ref+...) are kept as is.
 func (v *v1Config) convert() *Config {
-	method := MethodClientSecretBasic
+	p := Profile{
+		Issuer:       v.OIDC.IssuerURL,
+		ClientID:     v.OIDC.ClientID,
+		ClientSecret: v.OIDC.ClientSecret,
+		ClientAuth:   AuthBasic,
+		Flow:         FlowClientCredentials,
+		Scopes:       v.OIDC.Scopes,
+		Targets:      v.Targets,
+	}
 	switch v.OIDC.AuthMethod {
 	case "post":
-		method = MethodClientSecretPost
+		p.ClientAuth = AuthPost
 	case "none":
-		method = MethodNone
+		p.ClientAuth = AuthNone
 	}
 
 	// Version 1 used the password flow when user credentials were configured
-	flow := Flow{Type: FlowClientCredentials}
 	if v.User.Username != "" && v.User.Password != "" {
-		flow = Flow{Type: FlowPassword, Username: v.User.Username, Password: v.User.Password}
+		p.Flow = FlowPassword
+		p.Username = v.User.Username
+		p.Password = v.User.Password
+	}
+
+	// Without targets, version 1 wrote tokenKey (and idTokenKey) to the .env file
+	// found from the current directory: targets without file do the same.
+	if len(p.Targets) == 0 {
+		p.Targets = []Target{{Key: v.TokenKey, Type: TargetAccessToken}}
+		if v.IDTokenKey != "" {
+			p.Targets = append(p.Targets, Target{Key: v.IDTokenKey, Type: TargetIDToken})
+		}
 	}
 
 	return &Config{
-		Version: CurrentVersion,
-		Profiles: map[string]Profile{
-			DefaultProfileName: {
-				IssuerURL: v.OIDC.IssuerURL,
-				ClientID:  v.OIDC.ClientID,
-				Client:    Client{Method: method, Secret: v.OIDC.ClientSecret},
-				Flow:      flow,
-				Scopes:    v.OIDC.Scopes,
-				EnvKeys:   EnvKeys{AccessToken: v.TokenKey, IDToken: v.IDTokenKey},
-				Targets:   v.Targets,
-			},
-		},
+		Version:  CurrentVersion,
+		Profiles: map[string]Profile{DefaultProfileName: p},
 	}
 }
