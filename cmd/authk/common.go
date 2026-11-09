@@ -109,13 +109,13 @@ func agentForContext(ctx context.Context) (*agent.Client, error) {
 	return agent.NewClient(a.Socket), nil
 }
 
-// selectAgent returns a client for the agent whose ID starts with args[0], or for the
-// agent of the current context without argument.
+// selectAgent returns a client for the agent named args[0] (or whose ID starts with it),
+// or for the agent of the current context without argument.
 func selectAgent(ctx context.Context, args []string) (*agent.Client, error) {
 	if len(args) == 0 {
 		return agentForContext(ctx)
 	}
-	a, err := agent.FindByID(ctx, args[0])
+	a, err := agent.FindByRef(ctx, args[0])
 	if err != nil {
 		return nil, err
 	}

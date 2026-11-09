@@ -252,26 +252,52 @@ This is the main mode. The agent fetches a token, writes it to the profile targe
 
 While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
 
-An agent serves one profile of a config file, and one `.env` file when a target has no `file` (`--env` is ignored, with a warning, when no target writes the `.env` file). Several agents can run at the same time; a second agent for the same profile and files is refused.
+An agent serves one profile of a config file. Several agents can run at the same time: one per profile, for example. A second agent for the same profile is refused, except when all the targets of the profile are without `file`: then one agent per project `.env` is possible (`--env`, or a different directory). `--env` is ignored, with a warning, when no target writes the `.env` file.
 
 ```bash
-./authk agent list          # list running agents (alias: ls, --json available)
-./authk agent status [ID]   # show an agent state (--json available)
-./authk agent refresh [ID]  # renew the token now
-./authk agent logs [ID] -f  # follow the logs of a detached agent
-./authk agent stop [ID]     # stop an agent
-./authk agent stop --all    # stop every agent
+./authk agent list                # list running agents (alias: ls; --wide, --json)
+./authk agent status [NAME|ID]    # show an agent state (--json available)
+./authk agent refresh [NAME|ID]   # renew the token now
+./authk agent logs [NAME|ID] -f   # follow the logs of a detached agent
+./authk agent stop [NAME|ID]      # stop an agent
+./authk agent stop --all          # stop every agent
 ```
 
-Without ID, these commands act on the agent serving the current directory. An ID prefix is enough, as with Docker.
+Without argument, these commands act on the agent serving the current directory (and `--profile`).
 
 ```
 $ authk agent list
-ID                 PID    STARTED           TOKEN  MODE        CONFIG                 PROFILE  WRITES
-281028a4-b3def358  31337  2026-11-06 09:12  4m12s  detached    ~/dev/app/authk.cue    app      ~/dev/app/.env, ~/dev/app/frontend/.env.local
-9c41e0d2           31420  2026-11-06 09:13  4m30s  detached    ~/dev/app/authk.cue    me       -
-d4a4eba5           31502  2026-11-06 09:30  1m58s  foreground  ~/dev/other/authk.cue  default  ~/dev/other/.env
+NAME          PID    STARTED           TOKEN  MODE        WRITES
+app/dev       31337  2026-11-09 09:12  4m12s  detached    ~/dev/app/.env, ~/dev/app/frontend/.env.local
+app/me        31420  2026-11-09 09:13  4m30s  detached    -
+legacy@front  31502  2026-11-09 09:30  1m58s  detached    ~/dev/legacy/front/.env
+legacy@back   31540  2026-11-09 09:30  2m03s  detached    ~/dev/legacy/back/.env
+other         31611  2026-11-09 09:41  3m02s  foreground  ~/dev/other/.env
 ```
+
+#### Agent names
+
+Each agent gets a readable name, built from what it serves:
+
+| Part | Rule | Example |
+|---|---|---|
+| Project | Directory of the config file (`~` for `~/authk.cue`) | `app` |
+| Profile | `/<profile>`, except for `default` (version 1 configs) | `app/dev`, `other` |
+| `.env` | `@<dir>` when the agent writes a project `.env` that is not next to the config | `legacy@front` |
+
+Use `--name` to choose another one: `authk agent -d -p me --name kc-alice`.
+
+Names are not unique: two projects in directories with the same name (`~/work/api` and `~/perso/api`) both give `api`. authk never picks one for you:
+
+```
+$ authk agent stop api
+ambiguous agent: 2 agents are named api:
+  api  /home/me/work/api/authk.cue  (id 4624831a-22a6e520)
+  api  /home/me/perso/api/authk.cue  (id e9b15395-22ee9515)
+use the ID, or run the command from the project directory
+```
+
+Commands accept the name, the ID, or an ID prefix (as with Docker). `authk agent list --wide` shows the ID, config file and profile of each agent.
 
 `--detach` returns once the agent has its first token, or prints its log if it fails to start. Logs of detached agents are written to `$XDG_STATE_HOME/authk/logs` (default `~/.local/state/authk/logs`) and kept 7 days.
 
@@ -284,6 +310,7 @@ Sockets and registrations live in `$XDG_RUNTIME_DIR/authk/` (or a private direct
 - `--profile`, `-p`: Profile to use (default: `$AUTHK_PROFILE`, `defaultProfile`, or the only profile)
 - `--env`: Path to the .env file written by targets without `file` (default: `.env`)
 - `--detach`, `-d`: Run in the background
+- `--name`: Name of the agent (default: `<project>/<profile>`)
 - `--debug`: Enable debug logging
 
 ### Get Token (One-off)
@@ -305,7 +332,7 @@ authk get --id-token   # the ID Token instead of the Access Token
 
 If an agent serves the profile, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
 
-When several agents serve the profile (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent.
+When several agents serve the profile (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent socket.
 
 **Flags:**
 - `--id-token`: Print ID Token instead of Access Token

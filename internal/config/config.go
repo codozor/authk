@@ -91,6 +91,16 @@ type Target struct {
 	Type string `json:"type"`
 }
 
+// HasFileTargets reports whether a target writes to a fixed file (with file set).
+func (p *Profile) HasFileTargets() bool {
+	for _, t := range p.Targets {
+		if t.File != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // UsesEnvFile reports whether a target writes to the .env file found from the
 // current directory (or --env).
 func (p *Profile) UsesEnvFile() bool {

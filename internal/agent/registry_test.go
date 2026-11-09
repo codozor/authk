@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,7 +31,7 @@ func runRegistered(t *testing.T, configPath, profile, envFile string) Entry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := Entry{ID: id, PID: os.Getpid(), Socket: socket, ConfigPath: configPath, Profile: profile, EnvFile: envFile, StartedAt: time.Now()}
+	e := Entry{ID: id, Name: Name(configPath, profile, envFile, ""), PID: os.Getpid(), Socket: socket, ConfigPath: configPath, Profile: profile, EnvFile: envFile, StartedAt: time.Now()}
 	if err := Register(e); err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +100,14 @@ func TestRegistry_ListAndFind(t *testing.T) {
 	}
 
 	// By ID prefix
-	got, err = FindByID(ctx, front.ID[:12])
+	got, err = FindByRef(ctx, front.ID[:12])
 	if err != nil || got.ID != front.ID {
-		t.Errorf("FindByID(prefix) = %v, %v; want %s", got, err, front.ID)
+		t.Errorf("FindByRef(prefix) = %v, %v; want %s", got, err, front.ID)
 	}
-	if _, err := FindByID(ctx, front.ID[:8]); !errors.Is(err, ErrAmbiguous) {
+	if _, err := FindByRef(ctx, front.ID[:8]); !errors.Is(err, ErrAmbiguous) {
 		t.Errorf("a prefix shared by the 2 agents of config B must be ambiguous, got %v", err)
 	}
-	if _, err := FindByID(ctx, "ffffffff"); !errors.Is(err, ErrNotRunning) {
+	if _, err := FindByRef(ctx, "ffffffff"); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("expected ErrNotRunning, got %v", err)
 	}
 }
@@ -129,5 +130,34 @@ func TestRegistry_RemovesStaleEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(entryPath("deadbeef")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("stale entry was not removed")
+	}
+}
+
+func TestRegistry_FindByName(t *testing.T) {
+	useRuntimeDir(t)
+	ctx := context.Background()
+
+	dev := runRegistered(t, "/p/app/authk.cue", "dev", "")
+	runRegistered(t, "/work/api/authk.cue", "default", "")
+	runRegistered(t, "/perso/api/authk.cue", "default", "")
+
+	got, err := FindByRef(ctx, "app/dev")
+	if err != nil || got.ID != dev.ID {
+		t.Errorf("FindByRef(app/dev) = %v, %v; want %s", got, err, dev.ID)
+	}
+
+	// Two projects named api: the command must not pick one
+	_, err = FindByRef(ctx, "api")
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("expected ErrAmbiguous, got %v", err)
+	}
+	for _, want := range []string{"/work/api/authk.cue", "/perso/api/authk.cue", "use the ID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q misses %q", err, want)
+		}
+	}
+
+	if _, err := FindByRef(ctx, "nope"); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("expected ErrNotRunning, got %v", err)
 	}
 }

@@ -28,6 +28,7 @@ var (
 	statusJSON  bool
 	stopAll     bool
 	agentDetach bool
+	agentName   string
 )
 
 var agentCmd = &cobra.Command{
@@ -53,10 +54,10 @@ With --detach, the agent runs in the background and logs to a file
 }
 
 var agentStatusCmd = &cobra.Command{
-	Use:   "status [ID]",
+	Use:   "status [NAME|ID]",
 	Short: "Show the status of an agent",
-	Long: `Show the status of the agent with the given ID (a prefix is enough), or of the agent
-serving the current directory without ID.`,
+	Long: `Show the status of the agent with the given name or ID (an ID prefix is enough), or of
+the agent serving the current directory without argument.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := selectAgent(cmd.Context(), args)
@@ -72,7 +73,7 @@ serving the current directory without ID.`,
 }
 
 var agentRefreshCmd = &cobra.Command{
-	Use:   "refresh [ID]",
+	Use:   "refresh [NAME|ID]",
 	Short: "Make an agent renew its token now",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -89,16 +90,16 @@ var agentRefreshCmd = &cobra.Command{
 }
 
 var agentStopCmd = &cobra.Command{
-	Use:   "stop [ID]",
+	Use:   "stop [NAME|ID]",
 	Short: "Stop an agent",
-	Long: `Stop the agent with the given ID (a prefix is enough), the agent serving the current
-directory without ID, or every agent with --all.`,
+	Long: `Stop the agent with the given name or ID (an ID prefix is enough), the agent serving
+the current directory without argument, or every agent with --all.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		if stopAll {
 			if len(args) > 0 {
-				return errors.New("--all does not take an ID")
+				return errors.New("--all does not take an agent name")
 			}
 			return stopAllAgents(cmd)
 		}
@@ -113,7 +114,7 @@ directory without ID, or every agent with --all.`,
 		if err := client.Stop(ctx); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", st.ID)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", st.Name)
 		return err
 	},
 }
@@ -130,10 +131,10 @@ func stopAllAgents(cmd *cobra.Command) error {
 	var errs []error
 	for _, a := range agents {
 		if err := agent.NewClient(a.Socket).Stop(cmd.Context()); err != nil {
-			errs = append(errs, fmt.Errorf("agent %s: %w", a.ID, err))
+			errs = append(errs, fmt.Errorf("agent %s: %w", a.Name, err))
 			continue
 		}
-		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", a.ID); err != nil {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent %s stopped\n", a.Name); err != nil {
 			return err
 		}
 	}
@@ -169,10 +170,15 @@ func runAgent(parent context.Context, envChanged bool) error {
 	}
 	id := agent.ID(configPath, profile.Name, envKey, os.Getenv(agent.SocketEnv))
 	socket := agent.SocketFor(id)
+	name := agentName
+	if name == "" {
+		home, _ := os.UserHomeDir()
+		name = agent.Name(configPath, profile.Name, envKey, home)
+	}
 
-	// Fail fast, before authenticating, if an agent already serves the same files
-	if _, err := agent.NewClient(socket).Status(parent); err == nil {
-		return fmt.Errorf("%w (agent %s)", agent.ErrAlreadyRunning, id)
+	// Fail fast, before authenticating, if this agent would conflict with a running one
+	if err := checkConflicts(parent, id, name, configPath, profile); err != nil {
+		return err
 	}
 
 	targets := buildTargets(profile)
@@ -198,6 +204,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 	}
 	entry := agent.Entry{
 		ID:         id,
+		Name:       name,
 		PID:        os.Getpid(),
 		Socket:     socket,
 		ConfigPath: configPath,
@@ -219,6 +226,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 	refresher := agent.NewRefresher(client, token, func(t *oauth2.Token) { updateTargets(targets, t) })
 	info := agent.Info{
 		ID:         id,
+		Name:       name,
 		LogFile:    entry.LogFile,
 		ConfigPath: configPath,
 		Profile:    profile.Name,
@@ -239,6 +247,29 @@ func runAgent(parent context.Context, envChanged bool) error {
 		return err
 	}
 	log.Info().Msg("Shutting down")
+	return nil
+}
+
+// checkConflicts refuses to start an agent that would serve or write the same things
+// as a running one, or take the name given with --name.
+func checkConflicts(ctx context.Context, id, name, configPath string, p *config.Profile) error {
+	agents, err := agent.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range agents {
+		switch {
+		case a.ID == id:
+			return fmt.Errorf("%w (agent %s)", agent.ErrAlreadyRunning, a.Name)
+		case a.ConfigPath == configPath && a.Profile == p.Name && p.HasFileTargets():
+			// Several agents of a profile only differ by their project .env: targets with
+			// a fixed file would be written by all of them, with different tokens.
+			return fmt.Errorf("agent %s already serves profile %s, and its targets with a file would be written by both agents "+
+				"(several agents of a profile are only possible when all its targets are without file)", a.Name, p.Name)
+		case agentName != "" && a.Name == name:
+			return fmt.Errorf("the name %s is already used by another agent (%s)", name, a.ConfigPath)
+		}
+	}
 	return nil
 }
 
@@ -306,7 +337,8 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	line := func(label, format string, args ...any) {
 		fmt.Fprintf(&b, "%-14s"+format+"\n", append([]any{label + ":"}, args...)...)
 	}
-	line("Agent", "%s, running (pid %d, since %s)", st.ID, st.PID, st.StartedAt.Format(time.DateTime))
+	line("Agent", "%s, running (pid %d, since %s)", st.Name, st.PID, st.StartedAt.Format(time.DateTime))
+	line("ID", "%s", st.ID)
 	line("Config", "%s", st.ConfigPath)
 	line("Profile", "%s", st.Profile)
 	line("Issuer", "%s", st.Issuer)
@@ -351,6 +383,7 @@ func init() {
 	}
 	agentStopCmd.Flags().BoolVar(&stopAll, "all", false, "Stop every running agent")
 	agentCmd.Flags().BoolVarP(&agentDetach, "detach", "d", false, "Run the agent in the background")
+	agentCmd.Flags().StringVar(&agentName, "name", "", "Name of the agent (default: <project>/<profile>)")
 	agentCmd.AddCommand(agentStatusCmd, agentRefreshCmd, agentStopCmd)
 	rootCmd.AddCommand(agentCmd)
 }

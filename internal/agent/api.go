@@ -18,6 +18,7 @@ type TokenResponse struct {
 // Status is returned by GET /v1/status and POST /v1/refresh.
 type Status struct {
 	ID              string    `json:"id"`
+	Name            string    `json:"name"`
 	LogFile         string    `json:"logFile,omitempty"`
 	PID             int       `json:"pid"`
 	ConfigPath      string    `json:"configPath"`
