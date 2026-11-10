@@ -20,6 +20,7 @@ import (
 
 var (
 	listJSON   bool
+	listWide   bool
 	logsFollow bool
 )
 
@@ -36,15 +37,15 @@ var agentListCmd = &cobra.Command{
 		if listJSON {
 			return printAgentsJSON(cmd.OutOrStdout(), agents)
 		}
-		return printAgentsTable(cmd.OutOrStdout(), agents)
+		return printAgentsTable(cmd.OutOrStdout(), agents, listWide)
 	},
 }
 
 var agentLogsCmd = &cobra.Command{
-	Use:   "logs [ID]",
+	Use:   "logs [NAME|ID]",
 	Short: "Show the logs of a detached agent",
-	Long: `Show the log file of the agent with the given ID (a prefix is enough), or of the agent
-serving the current directory without ID. Only agents started with --detach have one.`,
+	Long: `Show the log file of the agent with the given name or ID (an ID prefix is enough), or of
+the agent serving the current directory without argument. Only agents started with --detach have one.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := selectAgent(cmd.Context(), args)
@@ -56,7 +57,7 @@ serving the current directory without ID. Only agents started with --detach have
 			return err
 		}
 		if st.LogFile == "" {
-			return fmt.Errorf("agent %s was not started with --detach: it logs to its terminal", st.ID)
+			return fmt.Errorf("agent %s was not started with --detach: it logs to its terminal", st.Name)
 		}
 		if !logsFollow {
 			f, err := os.Open(st.LogFile)
@@ -94,14 +95,18 @@ func printAgentsJSON(out io.Writer, agents []agent.Agent) error {
 	return enc.Encode(list)
 }
 
-func printAgentsTable(out io.Writer, agents []agent.Agent) error {
+func printAgentsTable(out io.Writer, agents []agent.Agent, wide bool) error {
 	if len(agents) == 0 {
 		_, err := fmt.Fprintln(out, "No agent running")
 		return err
 	}
 	home, _ := os.UserHomeDir()
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tPID\tSTARTED\tTOKEN\tMODE\tCONFIG\tWRITES")
+	header := "NAME\tPID\tSTARTED\tTOKEN\tMODE\tWRITES"
+	if wide {
+		header += "\tID\tCONFIG\tPROFILE"
+	}
+	_, _ = fmt.Fprintln(w, header)
 	for _, a := range agents {
 		mode := "foreground"
 		if a.LogFile != "" {
@@ -118,10 +123,16 @@ func printAgentsTable(out io.Writer, agents []agent.Agent) error {
 				files = append(files, tildePath(f, home))
 			}
 			writes = strings.Join(files, ", ")
+			if writes == "" {
+				writes = "-"
+			}
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
-			a.ID, a.PID, a.StartedAt.Local().Format("2006-01-02 15:04"), token, mode,
-			tildePath(a.ConfigPath, home), writes)
+		row := fmt.Sprintf("%s\t%d\t%s\t%s\t%s\t%s",
+			a.Name, a.PID, a.StartedAt.Local().Format("2006-01-02 15:04"), token, mode, writes)
+		if wide {
+			row += fmt.Sprintf("\t%s\t%s\t%s", a.ID, tildePath(a.ConfigPath, home), a.Profile)
+		}
+		_, _ = fmt.Fprintln(w, row)
 	}
 	return w.Flush()
 }
@@ -176,6 +187,7 @@ func followFile(ctx context.Context, out io.Writer, path string) error {
 
 func init() {
 	agentListCmd.Flags().BoolVar(&listJSON, "json", false, "Output as JSON")
+	agentListCmd.Flags().BoolVarP(&listWide, "wide", "w", false, "Also show the ID, config file and profile")
 	agentLogsCmd.Flags().BoolVarP(&logsFollow, "follow", "f", false, "Keep printing new log lines")
 	agentCmd.AddCommand(agentListCmd, agentLogsCmd)
 }

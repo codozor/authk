@@ -4,12 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/codozor/authk/internal/agent"
+	"github.com/codozor/authk/internal/config"
 	"github.com/codozor/authk/internal/env"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -110,57 +110,37 @@ func currentToken(cmd *cobra.Command, requestedType string) (token, source strin
 
 // tokenFromEnv reads the token of the requested type from the matching target file.
 func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
-	cfg, err := loadConfig()
+	profile, err := loadProfile()
 	if err != nil {
 		return "", err
 	}
 	resolveEnvFile()
 
-	// Determine which file and key to use
-	targetFile := envFile
-	targetKey := ""
+	targets := resolveTargets(profile)
 
-	found := false
-	// 1. If --env is explicitly provided, try to find a target matching that file and type
+	// With --env, prefer the target writing that file; otherwise the first target of the type
+	var target *config.Target
 	if cmd.Flags().Changed("env") {
-		// Target files are absolute (resolved against the config dir): compare absolute paths
-		wanted, err := filepath.Abs(envFile)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve env file path: %w", err)
-		}
-		for _, t := range cfg.Targets {
-			if t.File == wanted && t.Type == requestedType {
-				targetKey = t.Key
-				found = true
+		for i, t := range targets {
+			if t.File == envFile && t.Type == requestedType {
+				target = &targets[i]
 				break
 			}
 		}
 	}
-
-	// 2. If not found yet, take the first target matching the requested type
-	if !found {
-		for _, t := range cfg.Targets {
+	if target == nil {
+		for i, t := range targets {
 			if t.Type == requestedType {
-				targetFile = t.File
-				targetKey = t.Key
-				found = true
+				target = &targets[i]
 				break
 			}
 		}
 	}
-
-	// 3. Fallback to legacy/default behavior
-	if !found {
-		targetFile = envFile
-		if requestedType == agent.TypeIDToken {
-			if cfg.IDTokenKey == "" {
-				return "", fmt.Errorf("idTokenKey not configured in config file")
-			}
-			targetKey = cfg.IDTokenKey
-		} else {
-			targetKey = cfg.TokenKey
-		}
+	if target == nil {
+		return "", fmt.Errorf("profile %s has no %s target: nothing to read from a file (run an agent and use authk inspect without --from-env)",
+			profile.Name, requestedType)
 	}
+	targetFile, targetKey := target.File, target.Key
 
 	// Final check to find the file on disk (it might be in a parent directory)
 	if foundPath, err := env.Find(targetFile); err == nil {

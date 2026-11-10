@@ -13,7 +13,7 @@ import (
 
 // TokenClient is the part of oidc.Client used by the refresher.
 type TokenClient interface {
-	GetToken(ctx context.Context, username, password string) (*oauth2.Token, error)
+	GetToken(ctx context.Context) (*oauth2.Token, error)
 	RefreshToken(ctx context.Context, oldToken *oauth2.Token) (*oauth2.Token, error)
 }
 
@@ -231,5 +231,5 @@ func (r *Refresher) renew(ctx context.Context, token *oauth2.Token) (*oauth2.Tok
 		}
 		log.Warn().Err(err).Msg("Failed to refresh token, attempting full re-authentication")
 	}
-	return r.client.GetToken(ctx, "", "")
+	return r.client.GetToken(ctx)
 }

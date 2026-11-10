@@ -40,11 +40,16 @@ func CanonicalPath(path string) (string, error) {
 	return abs, nil
 }
 
-// ID identifies an agent by what it serves: the config file, plus the .env file when
-// the config has no targets (envFile is empty otherwise), plus a custom socket path
-// (AUTHK_SOCK). Paths must be canonical.
-func ID(configPath, envFile, customSocket string) string {
-	id := shortHash(configPath)
+// ID identifies an agent by what it serves: the config file and profile, plus the .env
+// file when the profile has no targets (envFile is empty otherwise), plus a custom
+// socket path (AUTHK_SOCK). Paths must be canonical. The "default" profile (the one of
+// a version 1 config) is left out, so that upgrading authk keeps the same IDs.
+func ID(configPath, profile, envFile, customSocket string) string {
+	key := configPath
+	if profile != "" && profile != "default" {
+		key += "#" + profile
+	}
+	id := shortHash(key)
 	if envFile == "" && customSocket == "" {
 		return id
 	}

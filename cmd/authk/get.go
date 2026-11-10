@@ -56,17 +56,17 @@ OIDC provider.`,
 			log.Debug().Err(err).Msg("No agent, requesting a new token")
 		}
 
-		cfg, err := loadConfig()
+		profile, err := loadProfile()
 		if err != nil {
 			return err
 		}
 
-		client, err := oidc.NewClient(cfg)
+		client, err := oidc.NewClient(profile)
 		if err != nil {
 			return fmt.Errorf("failed to initialize OIDC client: %w", err)
 		}
 
-		token, err := client.GetToken(cmd.Context(), "", "")
+		token, err := client.GetToken(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("failed to get token: %w", err)
 		}

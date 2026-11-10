@@ -11,6 +11,8 @@ var (
 	cfgFile string
 	envFile string
 	debug   bool
+
+	profileName string
 )
 
 var rootCmd = &cobra.Command{
@@ -51,4 +53,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "authk.cue", "config file (default is authk.cue)")
 	rootCmd.PersistentFlags().StringVar(&envFile, "env", ".env", "env file (default is .env)")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug logging")
+	rootCmd.PersistentFlags().StringVarP(&profileName, "profile", "p", "", "config profile (default: $AUTHK_PROFILE, defaultProfile, or the only profile)")
 }

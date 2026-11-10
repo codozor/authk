@@ -14,7 +14,7 @@ import (
 )
 
 // ErrAmbiguous is returned when several agents match and none can be chosen.
-var ErrAmbiguous = errors.New("several agents match")
+var ErrAmbiguous = errors.New("ambiguous agent")
 
 // pingTimeout bounds the status request used to check that a registered agent is alive.
 const pingTimeout = 3 * time.Second
@@ -23,9 +23,11 @@ const pingTimeout = 3 * time.Second
 // It makes every agent discoverable, even one using a custom socket (AUTHK_SOCK).
 type Entry struct {
 	ID         string    `json:"id"`
+	Name       string    `json:"name"`
 	PID        int       `json:"pid"`
 	Socket     string    `json:"socket"`
 	ConfigPath string    `json:"configPath"`
+	Profile    string    `json:"profile"`
 	EnvFile    string    `json:"envFile,omitempty"` // only when the config has no targets
 	LogFile    string    `json:"logFile,omitempty"` // only for a detached agent
 	StartedAt  time.Time `json:"startedAt"`
@@ -146,15 +148,15 @@ func removeStale(e Entry) {
 	}
 }
 
-// Find returns the agent serving configPath for the .env file envFile (paths must be
-// canonical):
-//   - the only running agent of this config, whatever its .env file: client and
-//     credentials come from the config, so its token is the right one;
+// Find returns the agent serving the profile of configPath for the .env file envFile
+// (paths must be canonical):
+//   - the only running agent of this profile, whatever its .env file: client and
+//     credentials come from the profile, so its token is the right one;
 //   - among several, the one writing envFile (or using the config targets);
 //   - otherwise ErrAmbiguous, since their credentials may differ (ref+env:// secrets).
 //
 // It returns ErrNotRunning if no agent serves this config.
-func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
+func Find(ctx context.Context, configPath, profile, envFile string) (*Agent, error) {
 	agents, err := List(ctx)
 	if err != nil {
 		return nil, err
@@ -162,7 +164,7 @@ func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
 
 	var candidates []Agent
 	for _, a := range agents {
-		if a.ConfigPath == configPath {
+		if a.ConfigPath == configPath && a.Profile == profile {
 			candidates = append(candidates, a)
 		}
 	}
@@ -182,37 +184,54 @@ func Find(ctx context.Context, configPath, envFile string) (*Agent, error) {
 	if len(exact) == 1 {
 		return checkResponding(exact[0])
 	}
-	return nil, fmt.Errorf("%w for %s: %s; use --env, an agent ID or %s",
-		ErrAmbiguous, configPath, describe(candidates), SocketEnv)
+	return nil, fmt.Errorf("%w for profile %s of %s: %s; use --env, an agent name or ID, or %s",
+		ErrAmbiguous, profile, configPath, describe(candidates), SocketEnv)
 }
 
-// FindByID returns the running agent whose ID starts with prefix.
-func FindByID(ctx context.Context, prefix string) (*Agent, error) {
+// FindByRef returns the running agent named ref, or whose ID starts with ref.
+// Several agents with that name give ErrAmbiguous, listing their configs and IDs.
+func FindByRef(ctx context.Context, ref string) (*Agent, error) {
 	agents, err := List(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	var named []Agent
+	for _, a := range agents {
+		if a.Name == ref {
+			named = append(named, a)
+		}
+	}
+	switch len(named) {
+	case 1:
+		return checkResponding(named[0])
+	case 0:
+	default:
+		return nil, fmt.Errorf("%w: %d agents are named %s:\n%s\nuse the ID, or run the command from the project directory",
+			ErrAmbiguous, len(named), ref, describeLines(named))
+	}
+
 	var matches []Agent
 	for _, a := range agents {
-		if a.ID == prefix {
+		if a.ID == ref {
 			return checkResponding(a)
 		}
-		if strings.HasPrefix(a.ID, prefix) {
+		if strings.HasPrefix(a.ID, ref) {
 			matches = append(matches, a)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return nil, fmt.Errorf("%w: no agent with ID %s", ErrNotRunning, prefix)
+		return nil, fmt.Errorf("%w: no agent named %s or with this ID", ErrNotRunning, ref)
 	case 1:
 		return checkResponding(matches[0])
 	}
-	return nil, fmt.Errorf("%w: ID prefix %s matches %s", ErrAmbiguous, prefix, describe(matches))
+	return nil, fmt.Errorf("%w: ID prefix %s matches several agents:\n%s", ErrAmbiguous, ref, describeLines(matches))
 }
 
 func checkResponding(a Agent) (*Agent, error) {
 	if a.Err != nil {
-		return nil, fmt.Errorf("agent %s (pid %d) is not responding: %w", a.ID, a.PID, a.Err)
+		return nil, fmt.Errorf("agent %s (pid %d) is not responding: %w", a.Name, a.PID, a.Err)
 	}
 	return &a, nil
 }
@@ -224,7 +243,16 @@ func describe(agents []Agent) string {
 		if target == "" {
 			target = "config targets"
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", a.ID, target))
+		parts = append(parts, fmt.Sprintf("%s (%s)", a.Name, target))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// describeLines lists agents one per line: name, config and ID.
+func describeLines(agents []Agent) string {
+	lines := make([]string, 0, len(agents))
+	for _, a := range agents {
+		lines = append(lines, fmt.Sprintf("  %s  %s  (id %s)", a.Name, a.ConfigPath, a.ID))
+	}
+	return strings.Join(lines, "\n")
 }

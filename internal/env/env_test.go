@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -318,5 +319,13 @@ func TestResolveEnvFile(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManager_Update_MissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", ".env")
+	err := NewManager(path, "TOKEN").Update("v")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected a missing directory error, got %v", err)
 	}
 }

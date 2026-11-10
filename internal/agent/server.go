@@ -26,8 +26,10 @@ const renewTimeout = 35 * time.Second
 // Info describes what the agent serves, for status reporting.
 type Info struct {
 	ID          string
+	Name        string
 	LogFile     string
 	ConfigPath  string
+	Profile     string
 	Issuer      string
 	ClientID    string
 	Targets     []string
@@ -179,9 +181,11 @@ func (s *server) status() Status {
 	state := s.refresher.State()
 	st := Status{
 		ID:          s.info.ID,
+		Name:        s.info.Name,
 		LogFile:     s.info.LogFile,
 		PID:         os.Getpid(),
 		ConfigPath:  s.info.ConfigPath,
+		Profile:     s.info.Profile,
 		Issuer:      s.info.Issuer,
 		ClientID:    s.info.ClientID,
 		Targets:     s.info.Targets,

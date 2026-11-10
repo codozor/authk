@@ -114,7 +114,7 @@ func detachAgent(cmd *cobra.Command) error {
 			for _, a := range agents {
 				if a.PID == child.Process.Pid && a.Status != nil {
 					_, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent %s started in the background (pid %d)\nLogs: authk agent logs %s\n",
-						a.ID, a.PID, a.ID)
+						a.Name, a.PID, a.Name)
 					return err
 				}
 			}

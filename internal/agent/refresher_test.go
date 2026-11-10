@@ -25,7 +25,7 @@ func (f *fakeClient) newToken() *oauth2.Token {
 	return &oauth2.Token{AccessToken: "t", RefreshToken: f.refreshToken, Expiry: time.Now().Add(f.lifetime)}
 }
 
-func (f *fakeClient) GetToken(context.Context, string, string) (*oauth2.Token, error) {
+func (f *fakeClient) GetToken(context.Context) (*oauth2.Token, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gets++

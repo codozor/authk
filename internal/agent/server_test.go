@@ -234,19 +234,25 @@ func TestIDAndSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv(SocketEnv, "")
 
-	a := ID("/projects/a/authk.cue", "", "")
-	if a != ID("/projects/a/authk.cue", "", "") {
+	a := ID("/projects/a/authk.cue", "default", "", "")
+	if a != ID("/projects/a/authk.cue", "default", "", "") {
 		t.Error("ID must be stable")
 	}
-	if a == ID("/projects/b/authk.cue", "", "") {
+	if a != ID("/projects/a/authk.cue", "", "", "") {
+		t.Error("the default profile must keep the ID of a version 1 config")
+	}
+	if a == ID("/projects/b/authk.cue", "default", "", "") {
 		t.Error("configs must give different IDs")
 	}
-	front := ID("/projects/a/authk.cue", "/projects/a/front/.env", "")
-	back := ID("/projects/a/authk.cue", "/projects/a/back/.env", "")
+	if ID("/projects/a/authk.cue", "dev", "", "") == ID("/projects/a/authk.cue", "prod", "", "") {
+		t.Error("profiles must give different IDs")
+	}
+	front := ID("/projects/a/authk.cue", "default", "/projects/a/front/.env", "")
+	back := ID("/projects/a/authk.cue", "default", "/projects/a/back/.env", "")
 	if front == back || !strings.HasPrefix(front, a+"-") {
 		t.Errorf("env files must give different IDs sharing the config prefix: %s %s %s", a, front, back)
 	}
-	if ID("/projects/a/authk.cue", "", "/custom.sock") == a {
+	if ID("/projects/a/authk.cue", "default", "", "/custom.sock") == a {
 		t.Error("a custom socket must give a different ID")
 	}
 
