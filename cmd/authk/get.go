@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/codozor/authk/internal/agent"
-	"github.com/codozor/authk/internal/oidc"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -61,9 +60,9 @@ OIDC provider.`,
 			return err
 		}
 
-		client, err := oidc.NewClient(profile)
+		client, err := newOIDCClient(profile)
 		if err != nil {
-			return fmt.Errorf("failed to initialize OIDC client: %w", err)
+			return err
 		}
 
 		token, err := client.GetToken(cmd.Context())

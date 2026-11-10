@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type fakeClient struct {
 	lifetime     time.Duration
 	refreshToken string // returned in new tokens
 	getErr       error
+	refreshErr   error
 	gets         int
 	refreshes    int
 	refreshedAt  []time.Time
@@ -40,6 +42,9 @@ func (f *fakeClient) RefreshToken(_ context.Context, old *oauth2.Token) (*oauth2
 	defer f.mu.Unlock()
 	f.refreshes++
 	f.refreshedAt = append(f.refreshedAt, time.Now())
+	if f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
 	return f.newToken(), nil
 }
 
@@ -239,5 +244,182 @@ func TestRefresher_State(t *testing.T) {
 	}
 	if st := r.State(); st.LastErr == nil || st.Token == nil {
 		t.Errorf("state = %+v, want the error and the previous token", st)
+	}
+}
+
+// fakeLogin is a LoginFunc whose logins end when release receives a result.
+type fakeLogin struct {
+	mu      sync.Mutex
+	starts  int
+	release chan error
+	token   *oauth2.Token
+}
+
+func newFakeLogin(token *oauth2.Token) *fakeLogin {
+	return &fakeLogin{release: make(chan error, 1), token: token}
+}
+
+func (f *fakeLogin) login(context.Context) (LoginPrompt, func(context.Context) (*oauth2.Token, error), error) {
+	f.mu.Lock()
+	f.starts++
+	f.mu.Unlock()
+	prompt := LoginPrompt{URL: "https://idp/device", Code: "ABCD", Expiry: time.Now().Add(time.Minute)}
+	return prompt, func(ctx context.Context) (*oauth2.Token, error) {
+		select {
+		case err := <-f.release:
+			if err != nil {
+				return nil, err
+			}
+			return f.token, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}, nil
+}
+
+func waitDone(t *testing.T, l *Login) {
+	t.Helper()
+	select {
+	case <-l.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("login did not end")
+	}
+}
+
+func TestRefresher_InteractiveLogin(t *testing.T) {
+	client := &fakeClient{lifetime: time.Hour, refreshToken: "rt"}
+	var written []*oauth2.Token
+	var mu sync.Mutex
+	r := testRefresher(client, nil, func(tok *oauth2.Token) {
+		mu.Lock()
+		written = append(written, tok)
+		mu.Unlock()
+	})
+	fl := newFakeLogin(&oauth2.Token{AccessToken: "logged", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)})
+	r.SetLogin(fl.login)
+
+	if st := r.State(); !st.LoginRequired || st.Token != nil || !st.LastRenewal.IsZero() {
+		t.Fatalf("before login: %+v", st)
+	}
+	if _, err := r.Renew(context.Background(), nil); !errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("Renew() before login error = %v, want ErrLoginRequired", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- r.Run(ctx) }()
+
+	l, err := r.StartLogin(ctx, ctx)
+	if err != nil {
+		t.Fatalf("StartLogin() error = %v", err)
+	}
+	if l.Prompt.Code != "ABCD" {
+		t.Errorf("prompt = %+v", l.Prompt)
+	}
+	// A second call joins the pending login
+	l2, err := r.StartLogin(ctx, ctx)
+	if err != nil || l2 != l {
+		t.Errorf("second StartLogin() = %p, %v; want the pending login %p", l2, err, l)
+	}
+	if st := r.State(); st.Login == nil || st.Login.Code != "ABCD" {
+		t.Errorf("pending login not in state: %+v", st)
+	}
+
+	fl.release <- nil
+	waitDone(t, l)
+	if l.Err() != nil {
+		t.Fatalf("login error = %v", l.Err())
+	}
+	st := r.State()
+	if st.LoginRequired || st.Login != nil || st.Token == nil || st.Token.AccessToken != "logged" {
+		t.Errorf("after login: %+v", st)
+	}
+	mu.Lock()
+	if len(written) != 1 {
+		t.Errorf("onToken called %d times, want 1", len(written))
+	}
+	mu.Unlock()
+	fl.mu.Lock()
+	if fl.starts != 1 {
+		t.Errorf("login started %d times, want 1", fl.starts)
+	}
+	fl.mu.Unlock()
+	// Interactive flows never authenticate by themselves
+	if gets, _ := client.counts(); gets != 0 {
+		t.Errorf("GetToken called %d times", gets)
+	}
+	cancel()
+	if err := <-runDone; err != nil {
+		t.Errorf("Run() error = %v", err)
+	}
+}
+
+func TestRefresher_InteractiveLoginFails(t *testing.T) {
+	r := testRefresher(&fakeClient{}, nil, nil)
+	fl := newFakeLogin(nil)
+	r.SetLogin(fl.login)
+
+	l, err := r.StartLogin(context.Background(), context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl.release <- errors.New("code expired")
+	waitDone(t, l)
+	if l.Err() == nil {
+		t.Fatal("expected a login error")
+	}
+	st := r.State()
+	if st.Login != nil || !st.LoginRequired || st.LastErr == nil {
+		t.Errorf("after failed login: %+v", st)
+	}
+	// A new login can start
+	l2, err := r.StartLogin(context.Background(), context.Background())
+	if err != nil || l2 == l {
+		t.Errorf("new StartLogin() = %v, %v", l2, err)
+	}
+	fl.release <- errors.New("stop")
+	waitDone(t, l2)
+}
+
+func TestRefresher_InteractiveSessionExpired(t *testing.T) {
+	expired := &oauth2.RetrieveError{ErrorCode: "invalid_grant"}
+	for _, tc := range []struct {
+		name       string
+		refreshErr error
+		wantLogin  bool
+	}{
+		{"session expired", fmt.Errorf("failed to refresh token: %w", expired), true},
+		{"transient error", errors.New("connection refused"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeClient{lifetime: time.Hour, refreshErr: tc.refreshErr}
+			r := testRefresher(client, &oauth2.Token{AccessToken: "a", RefreshToken: "rt", Expiry: time.Now().Add(time.Minute)}, nil)
+			r.SetLogin(newFakeLogin(nil).login)
+			if r.State().LoginRequired {
+				t.Fatal("login required with a token")
+			}
+
+			_, err := r.Renew(context.Background(), nil)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errors.Is(err, ErrLoginRequired); got != tc.wantLogin {
+				t.Errorf("errors.Is(ErrLoginRequired) = %v, want %v (%v)", got, tc.wantLogin, err)
+			}
+			if got := r.State().LoginRequired; got != tc.wantLogin {
+				t.Errorf("LoginRequired = %v, want %v", got, tc.wantLogin)
+			}
+			if gets, _ := client.counts(); gets != 0 {
+				t.Errorf("GetToken called %d times", gets)
+			}
+		})
+	}
+}
+
+func TestRefresher_StartLoginNonInteractive(t *testing.T) {
+	r := testRefresher(&fakeClient{}, &oauth2.Token{AccessToken: "a"}, nil)
+	if _, err := r.StartLogin(context.Background(), context.Background()); err == nil {
+		t.Error("expected an error for a non-interactive flow")
 	}
 }

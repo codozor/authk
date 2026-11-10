@@ -70,6 +70,15 @@ func (c *Client) Refresh(ctx context.Context) (*Status, error) {
 	return &st, nil
 }
 
+// Login starts an interactive login (or returns the pending one). Follow it with Status.
+func (c *Client) Login(ctx context.Context) (*LoginPrompt, error) {
+	var prompt LoginPrompt
+	if err := c.do(ctx, http.MethodPost, "/v1/login", &prompt); err != nil {
+		return nil, err
+	}
+	return &prompt, nil
+}
+
 // Stop asks the agent to stop.
 func (c *Client) Stop(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/stop", nil)
@@ -103,6 +112,10 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	if resp.StatusCode >= 300 {
 		var e errorResponse
 		if json.Unmarshal(body, &e) == nil && e.Error != "" {
+			if e.Code == codeLoginRequired {
+				// The message already says login required
+				return &loginRequiredError{msg: e.Error}
+			}
 			return fmt.Errorf("agent: %s", e.Error)
 		}
 		return fmt.Errorf("agent: unexpected status %s", resp.Status)
@@ -115,3 +128,10 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	}
 	return nil
 }
+
+// loginRequiredError is an ErrLoginRequired reported by an agent, with its message.
+type loginRequiredError struct{ msg string }
+
+func (e *loginRequiredError) Error() string { return "agent: " + e.msg }
+
+func (e *loginRequiredError) Is(target error) bool { return target == ErrLoginRequired }

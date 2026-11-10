@@ -35,7 +35,9 @@ func (v *v1Config) convert() *Config {
 	case "post":
 		p.ClientAuth = AuthPost
 	case "none":
+		// Version 1 ignored the secret of a public client, with a warning
 		p.ClientAuth = AuthNone
+		p.ClientSecret = ""
 	}
 
 	// Version 1 used the password flow when user credentials were configured

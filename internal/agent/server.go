@@ -100,6 +100,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /v1/stop", s.handleStop)
+	mux.HandleFunc("POST /v1/login", s.handleLogin)
 	return mux
 }
 
@@ -124,8 +125,16 @@ func (s *server) handleToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	token := s.refresher.Current()
+	if token == nil {
+		s.writeLoginRequired(w, ErrLoginRequired)
+		return
+	}
 	if expiresWithin(token, minTTL) {
 		renewed, err := s.renew(token)
+		if errors.Is(err, ErrLoginRequired) {
+			s.writeLoginRequired(w, err)
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("failed to renew token: %w", err))
 			return
@@ -156,11 +165,35 @@ func (s *server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleRefresh(w http.ResponseWriter, _ *http.Request) {
-	if _, err := s.renew(nil); err != nil {
+	_, err := s.renew(nil)
+	if errors.Is(err, ErrLoginRequired) {
+		s.writeLoginRequired(w, err)
+		return
+	}
+	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("failed to renew token: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, s.status())
+}
+
+// handleLogin starts an interactive login (or returns the pending one) and returns its
+// prompt at once: the client then follows the login through the status.
+func (s *server) handleLogin(w http.ResponseWriter, req *http.Request) {
+	l, err := s.refresher.StartLogin(req.Context(), s.ctx)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("failed to start login: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, l.Prompt)
+}
+
+// writeLoginRequired tells the client that the user must log in, and how.
+func (s *server) writeLoginRequired(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusServiceUnavailable, errorResponse{
+		Error: fmt.Sprintf("%v: run \"authk agent login %s\"", err, s.info.Name),
+		Code:  codeLoginRequired,
+	})
 }
 
 func (s *server) handleStop(w http.ResponseWriter, _ *http.Request) {
@@ -180,20 +213,23 @@ func (s *server) renew(seen *oauth2.Token) (*oauth2.Token, error) {
 func (s *server) status() Status {
 	state := s.refresher.State()
 	st := Status{
-		ID:          s.info.ID,
-		Name:        s.info.Name,
-		LogFile:     s.info.LogFile,
-		PID:         os.Getpid(),
-		ConfigPath:  s.info.ConfigPath,
-		Profile:     s.info.Profile,
-		Issuer:      s.info.Issuer,
-		ClientID:    s.info.ClientID,
-		Targets:     s.info.Targets,
-		TargetFiles: s.info.TargetFiles,
-		StartedAt:   s.startedAt,
-		LastRenewal: state.LastRenewal,
+		ID:            s.info.ID,
+		Name:          s.info.Name,
+		LogFile:       s.info.LogFile,
+		PID:           os.Getpid(),
+		ConfigPath:    s.info.ConfigPath,
+		Profile:       s.info.Profile,
+		Issuer:        s.info.Issuer,
+		ClientID:      s.info.ClientID,
+		Targets:       s.info.Targets,
+		TargetFiles:   s.info.TargetFiles,
+		StartedAt:     s.startedAt,
+		LastRenewal:   state.LastRenewal,
+		LoginRequired: state.LoginRequired,
+		Login:         state.Login,
 	}
 	if state.Token != nil {
+		st.Ready = true
 		st.Expiry = state.Token.Expiry
 		st.HasRefreshToken = state.Token.RefreshToken != ""
 		idToken, _ := state.Token.Extra("id_token").(string)

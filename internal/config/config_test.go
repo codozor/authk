@@ -153,6 +153,35 @@ oidc: {
 	}
 }
 
+func TestProfile_PublicClientWithSecret(t *testing.T) {
+	// Version 2: contradictory settings are rejected
+	v2 := writeConfig(t, "package config\nversion: 2\nprofiles: p: {\n"+
+		"issuer: \"https://x\"\nclientId: \"c\"\nclientSecret: \"s\"\nclientAuth: \"none\"\nflow: \"device_code\"\n}\n")
+	cfg, err := Load(v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.Profile("p"); err == nil || !strings.Contains(err.Error(), "remove clientAuth") {
+		t.Errorf("Profile() error = %v, want a clientAuth/clientSecret conflict", err)
+	}
+
+	// Version 1 ignored the secret: converted configs keep working
+	v1 := writeConfig(t, `
+package config
+
+oidc: {
+	issuerUrl: "https://example.com"
+	clientId: "public-client"
+	clientSecret: "ignored"
+	authMethod: "none"
+}
+user: { username: "u", password: "p" }
+`)
+	if p := mustProfile(t, v1, ""); p.ClientSecret != "" || !p.Public() {
+		t.Errorf("unexpected profile %+v", p)
+	}
+}
+
 func TestLoadV1_Targets(t *testing.T) {
 	path := writeConfig(t, `
 package config
