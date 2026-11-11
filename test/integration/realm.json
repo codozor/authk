@@ -1,0 +1,51 @@
+{
+  "realm": "authk-test",
+  "enabled": true,
+  "accessTokenLifespan": 60,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "oauth2DeviceCodeLifespan": 600,
+  "oauth2DevicePollingInterval": 1,
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "credentials": [{ "type": "password", "value": "alice-password", "temporary": false }]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "svc",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "svc-secret",
+      "clientAuthenticatorType": "client-secret",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": false
+    },
+    {
+      "clientId": "tv",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": { "oauth2.device.authorization.grant.enabled": "true" }
+    },
+    {
+      "clientId": "web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1/callback"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    }
+  ]
+}
