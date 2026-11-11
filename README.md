@@ -16,6 +16,7 @@
 - **OIDC Integration**: Client Credentials, Resource Owner Password Credentials, Device Authorization and Authorization Code with PKCE flows, for Keycloak, Authentik or any OIDC provider.
 - **Profiles**: several identities (realms, clients, users) in a single config file, with or without files to write.
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
+- **Persistent sessions**: after a browser login, the refresh token is kept in the OS keyring (or a private file), so restarting the agent does not ask you to log in again.
 - **.env Management**: updates keys of `.env` files with the new tokens.
 - **Configurable**: uses CUE for flexible and type-safe configuration, with secrets from env, files, SOPS or Kubernetes.
 
@@ -66,6 +67,7 @@ profiles: dev: {
 | `flow` | yes | How tokens are obtained, see below. |
 | `username`, `password` | `password` flow | User credentials. |
 | `redirectPort` | no, `authorization_code` flow | Port of the redirect URI `http://127.0.0.1:<port>/callback`. Absent: a free port at each login. |
+| `tokenStore` | no, `device_code` and `authorization_code` flows | Where the refresh token is kept between runs: `auto` (default), `keyring`, `file` or `none`. See [Stored sessions](#stored-sessions). |
 | `scopes` | no | Default: `["openid", "profile", "email"]`. |
 | `targets` | no | Files to write the tokens to. Absent: nothing is written. |
 
@@ -86,10 +88,27 @@ Why `clientSecret` and `flow` are separate: the client secret authenticates the 
 
 `device_code` and `authorization_code` need you to log in, in a browser. No password is stored in the config. What follows applies to both:
 
-- `authk get` without agent logs in on every call: run an agent instead, which logs in once, in the foreground as with `--detach` (the detached agent goes to the background once you logged in).
-- The agent renews the token with the refresh token. When the session expires (Keycloak *SSO Session Max*, idle timeout, revoked token), it cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
+- The agent logs in once, in the foreground as with `--detach` (the detached agent goes to the background once you logged in), then renews the token with the refresh token.
+- The refresh token is stored (see [Stored sessions](#stored-sessions)): restarting the agent, or `authk get` without agent, reuses the session instead of logging in again.
+- When the session expires (Keycloak *SSO Session Max*, idle timeout, revoked token), the agent cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
 - Without refresh token, you must log in again each time the token expires. Add the `offline_access` scope to get one: required with Authentik, optional with Keycloak, where it gives an *offline token* that survives the end of the SSO session (each login then creates an offline session, listed in the account console).
 - An offline refresh token outlives your browser session: logging out does not stop a running agent. To cut its access, revoke the token in the provider; the agent notices at its next renewal (`authk agent refresh` forces it), and the access token already issued stays valid until it expires.
+
+#### Stored sessions
+
+After a login, and after each renewal, authk stores the refresh token, so that the next run (agent restart, reboot, `authk get` without agent) refreshes it instead of asking you to log in. `tokenStore` says where:
+
+| `tokenStore` | Where |
+|---|---|
+| `auto` (default) | The OS keyring when it is available, the file otherwise. |
+| `keyring` | The OS keyring: Secret Service (GNOME Keyring, KWallet) on Linux, Keychain on macOS, Credential Manager on Windows. An error if it is not available. |
+| `file` | A file readable only by you, in `$XDG_STATE_HOME/authk/tokens` (default `~/.local/state/authk/tokens`). |
+| `none` | Nowhere: each run logs in. |
+
+- A machine without desktop session (SSH, VS Code Remote, container) usually has no keyring: `auto` then uses the file. The file holds the token in clear, like the `.env` files authk writes; use `none` where that is not acceptable.
+- The session is shared by the runs of a profile: same config file, profile, issuer, client and scopes. Changing the scopes asks for a new login.
+- With refresh token rotation (Keycloak *Revoke Refresh Token*), each refresh token works once: authk serializes the refreshes of a profile with a lock and always uses the newest stored token, so an agent and `authk get --direct` can run at the same time.
+- A refresh token rejected by the provider (expired, revoked) is deleted. Keycloak tells when the session expires (`refresh_expires_in`): `authk agent status` shows it on the `Session` line, and an expired stored token is not even tried.
 
 #### Device code
 
@@ -351,7 +370,7 @@ This is the main mode. The agent fetches a token, writes it to the profile targe
 
 With an interactive flow (`device_code`, `authorization_code`), the agent shows the login and waits for you, in the foreground as with `--detach`: the detached agent goes to the background once you logged in.
 
-While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
+While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again.
 
 An agent serves one profile of a config file. Several agents can run at the same time: one per profile, for example. A second agent for the same profile is refused, except when all the targets of the profile are without `file`: then one agent per project `.env` is possible (`--env`, or a different directory). `--env` is ignored, with a warning, when no target writes the `.env` file.
 

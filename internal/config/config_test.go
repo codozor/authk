@@ -249,6 +249,7 @@ profiles: web: {
 	clientAuth:   "none"
 	flow:         "authorization_code"
 	redirectPort: 8765
+	tokenStore:   "file"
 }
 `
 
@@ -281,7 +282,8 @@ func TestLoadV2_Profiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile(tv) error = %v", err)
 	}
-	if tv.Flow != FlowDeviceCode || !tv.Public() || tv.ClientAuth != AuthBasic || len(tv.Targets) != 0 || tv.UsesEnvFile() {
+	if tv.Flow != FlowDeviceCode || !tv.Public() || tv.ClientAuth != AuthBasic || len(tv.Targets) != 0 || tv.UsesEnvFile() ||
+		tv.TokenStore != StoreAuto {
 		t.Errorf("unexpected tv profile %+v", tv)
 	}
 
@@ -291,7 +293,7 @@ func TestLoadV2_Profiles(t *testing.T) {
 		t.Errorf("expected a secret resolution error for prod, got %v", err)
 	}
 	web, err := cfg.Profile("web")
-	if err != nil || web.Flow != FlowAuthorizationCode || web.RedirectPort != 8765 || !web.Public() {
+	if err != nil || web.Flow != FlowAuthorizationCode || web.RedirectPort != 8765 || !web.Public() || web.TokenStore != StoreFile {
 		t.Errorf("web profile = %+v, %v", web, err)
 	}
 }
@@ -367,6 +369,8 @@ func TestLoadV2_Invalid(t *testing.T) {
 		"username with another flow":     profile(`flow: "client_credentials"` + "\nusername: \"u\""),
 		"redirectPort with another flow": profile(`flow: "device_code"` + "\nredirectPort: 8765"),
 		"redirectPort out of range":      profile(`flow: "authorization_code"` + "\nredirectPort: 70000"),
+		"tokenStore with another flow":   profile(`flow: "client_credentials"` + "\ntokenStore: \"file\""),
+		"unknown tokenStore":             profile(`flow: "device_code"` + "\ntokenStore: \"vault\""),
 		"typo in a field":                profile(`flow: "client_credentials"` + "\nscope: [\"openid\"]"),
 		"unknown clientAuth":             profile(`flow: "client_credentials"` + "\nclientAuth: \"client_secret_basic\""),
 		"target without key":             profile(`flow: "client_credentials"` + "\ntargets: [{file: \".env\"}]"),

@@ -35,9 +35,13 @@ type Status struct {
 	LastRenewal     time.Time `json:"lastRenewal"`
 	LastError       string    `json:"lastError,omitempty"`
 
-	// Interactive flows (device_code)
+	// Interactive flows (device_code, authorization_code)
 	LoginRequired bool         `json:"loginRequired,omitempty"` // a login is needed to get or renew the token
 	Login         *LoginPrompt `json:"login,omitempty"`         // pending login
+	TokenStore    string       `json:"tokenStore,omitempty"`    // where the refresh token is stored
+	// When the refresh token expires (refresh_expires_in, Keycloak): a login is needed
+	// after it. Zero when unknown or when it does not expire (offline token).
+	SessionExpiry time.Time `json:"sessionExpiry,omitzero"`
 }
 
 // loginCompleteRequest is the body of POST /v1/login/complete.

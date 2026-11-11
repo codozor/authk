@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/codozor/authk/internal/tokenstore"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/oauth2"
 )
@@ -35,6 +36,7 @@ type Info struct {
 	ClientID    string
 	Targets     []string
 	TargetFiles []string
+	TokenStore  string // where the refresh token is stored (interactive flows)
 }
 
 type server struct {
@@ -244,6 +246,7 @@ func (s *server) status() Status {
 		LastRenewal:   state.LastRenewal,
 		LoginRequired: state.LoginRequired,
 		Login:         state.Login,
+		TokenStore:    s.info.TokenStore,
 	}
 	if state.Token != nil {
 		st.Ready = true
@@ -251,6 +254,7 @@ func (s *server) status() Status {
 		st.HasRefreshToken = state.Token.RefreshToken != ""
 		idToken, _ := state.Token.Extra("id_token").(string)
 		st.HasIDToken = idToken != ""
+		st.SessionExpiry = tokenstore.RefreshExpiry(state.Token, state.LastRenewal)
 	}
 	if state.LastErr != nil {
 		st.LastError = state.LastErr.Error()

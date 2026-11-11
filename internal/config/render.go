@@ -41,6 +41,9 @@ func Render(c *Config) ([]byte, error) {
 		if p.Flow == FlowAuthorizationCode && p.RedirectPort != 0 {
 			fmt.Fprintf(&b, "redirectPort: %d\n", p.RedirectPort)
 		}
+		if p.TokenStore != "" && p.TokenStore != StoreAuto {
+			fmt.Fprintf(&b, "tokenStore: %s\n", quote(p.TokenStore))
+		}
 
 		if !slices.Equal(p.Scopes, defaultScopes) {
 			quoted := make([]string, 0, len(p.Scopes))
