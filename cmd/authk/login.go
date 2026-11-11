@@ -98,6 +98,11 @@ func stdinIsTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
+// stderrIsTerminal tells whether someone can see a login prompt written to stderr.
+func stderrIsTerminal() bool {
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 // readPastedURLs passes each line typed in the terminal to complete, until one is
 // accepted. It returns at once: lines are read in the background, and nothing is read
 // when stdin is not a terminal.

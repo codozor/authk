@@ -64,6 +64,7 @@ OIDC provider.`,
 		if err != nil {
 			return err
 		}
+		client.noPrompt = !stderrIsTerminal()
 
 		token, err := client.GetToken(cmd.Context())
 		if err != nil {

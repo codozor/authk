@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -89,22 +90,53 @@ func (k *Keeper) Refresh(ctx context.Context, current *oauth2.Token, refresh Ref
 		}
 		return nil, err
 	}
-	k.save(token)
+	if err := k.save(token); err != nil {
+		log.Warn().Err(err).Msg("The next run will have to log in")
+	}
 	return token, nil
 }
 
-// Save stores the refresh token of token, after a login. Failures are only logged:
-// the token is valid, only the next run will have to log in.
-func (k *Keeper) Save(ctx context.Context, token *oauth2.Token) {
+// Save stores the refresh token of token, after a login. A token without refresh
+// token is not stored (the previous session is kept).
+func (k *Keeper) Save(ctx context.Context, token *oauth2.Token) error {
 	if k == nil || token == nil {
-		return
+		return nil
 	}
 	release := k.lock(ctx)
-	if release == nil && ctx.Err() != nil {
-		return
+	if release == nil {
+		return ctx.Err()
 	}
 	defer release()
-	k.save(token)
+	return k.save(token)
+}
+
+// Forget deletes the stored session and returns its refresh token, "" if none was
+// stored (an expired one is returned too: revoking it is harmless).
+func (k *Keeper) Forget(ctx context.Context) (string, error) {
+	if k == nil {
+		return "", nil
+	}
+	release := k.lock(ctx)
+	if release == nil {
+		return "", ctx.Err()
+	}
+	defer release()
+	e, err := k.backend.Load(k.key)
+	if errors.Is(err, ErrNotFound) {
+		return "", nil
+	}
+	rt := ""
+	if err == nil {
+		rt = e.RefreshToken
+	}
+	// A corrupt entry is deleted too
+	if derr := k.backend.Delete(k.key); derr != nil {
+		return "", derr
+	}
+	k.mu.Lock()
+	k.seen = ""
+	k.mu.Unlock()
+	return rt, nil
 }
 
 // lock takes the lock of the key, or returns a no-op when there is no lock. It returns
@@ -141,19 +173,19 @@ func (k *Keeper) load() *Entry {
 	return e
 }
 
-func (k *Keeper) save(token *oauth2.Token) {
+func (k *Keeper) save(token *oauth2.Token) error {
 	if token.RefreshToken == "" {
-		return
+		return nil
 	}
 	e := &Entry{RefreshToken: token.RefreshToken, RefreshExpiry: RefreshExpiry(token, time.Now())}
 	if err := k.backend.Save(k.key, e); err != nil {
-		log.Warn().Err(err).Str("store", k.backend.Name()).Msg("Failed to store the refresh token: the next run will have to log in")
-		return
+		return fmt.Errorf("failed to store the refresh token in the %s: %w", k.backend.Name(), err)
 	}
 	k.mu.Lock()
 	k.seen = e.RefreshToken
 	k.mu.Unlock()
 	log.Debug().Str("store", k.backend.Name()).Msg("Refresh token stored")
+	return nil
 }
 
 func (k *Keeper) delete() {

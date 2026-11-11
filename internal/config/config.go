@@ -94,6 +94,11 @@ func (p *Profile) Public() bool {
 	return p.ClientAuth == AuthNone || p.ClientSecret == ""
 }
 
+// Interactive reports whether the flow needs the user to log in, in a browser.
+func (p *Profile) Interactive() bool {
+	return p.Flow == FlowDeviceCode || p.Flow == FlowAuthorizationCode
+}
+
 // Target is a key of a file to update with a token. An empty File means the .env
 // file found from the current directory, or given with --env.
 type Target struct {

@@ -94,11 +94,7 @@ func (c *Client) withHTTPClient(ctx context.Context) context.Context {
 
 // Interactive reports whether the flow of the profile needs the user to log in.
 func (c *Client) Interactive() bool {
-	switch c.profile.Flow {
-	case config.FlowDeviceCode, config.FlowAuthorizationCode:
-		return true
-	}
-	return false
+	return c.profile.Interactive()
 }
 
 // GetToken runs the flow of the profile to get a new token. For interactive flows, it

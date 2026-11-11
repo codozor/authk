@@ -234,7 +234,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 
 	refresher := agent.NewRefresher(client, token, func(t *oauth2.Token) { updateTargets(targets, t) })
 	if interactive {
-		refresher.SetLogin(client.login())
+		refresher.SetLogin(client.agentLogin())
 	}
 	info := agent.Info{
 		ID:         id,
