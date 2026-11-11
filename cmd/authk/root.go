@@ -44,6 +44,10 @@ func printBanner() {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		// authk exec: the command already reported its failure
+		if code, ok := exitCode(err); ok {
+			os.Exit(code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

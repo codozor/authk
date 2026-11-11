@@ -129,7 +129,7 @@ func TestServer_TokenMissingID(t *testing.T) {
 	client, _ := startAgent(t, NewRefresher(fc, tokenWithID("a", "", time.Hour), nil))
 
 	_, err := client.Token(context.Background(), TypeIDToken, 0)
-	if err == nil || !strings.Contains(err.Error(), "no ID Token") {
+	if !errors.Is(err, ErrNoIDToken) {
 		t.Errorf("expected a missing ID Token error, got %v", err)
 	}
 }

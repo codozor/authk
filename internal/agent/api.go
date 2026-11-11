@@ -49,8 +49,11 @@ type loginCompleteRequest struct {
 	URL string `json:"url"`
 }
 
-// codeLoginRequired marks an error response caused by ErrLoginRequired.
-const codeLoginRequired = "login_required"
+// Error codes, telling clients which error to return.
+const (
+	codeLoginRequired = "login_required" // ErrLoginRequired
+	codeNoIDToken     = "no_id_token"    // ErrNoIDToken
+)
 
 type errorResponse struct {
 	Error string `json:"error"`
