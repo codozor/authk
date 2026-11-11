@@ -267,7 +267,11 @@ func initialLogin(ctx context.Context, r *agent.Refresher) error {
 		return fmt.Errorf("failed to start login: %w", err)
 	}
 	if !isDetachedChild() {
-		printLoginPrompt(os.Stderr, l.Prompt)
+		canPaste := l.Prompt.Browser && stdinIsTerminal()
+		showLogin(os.Stderr, l.Prompt, canPaste)
+		if canPaste {
+			readPastedURLs(os.Stderr, r.CompleteLogin)
+		}
 	}
 	select {
 	case <-l.Done():

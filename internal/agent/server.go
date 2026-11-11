@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -101,6 +102,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /v1/stop", s.handleStop)
 	mux.HandleFunc("POST /v1/login", s.handleLogin)
+	mux.HandleFunc("POST /v1/login/complete", s.handleLoginComplete)
 	return mux
 }
 
@@ -186,6 +188,21 @@ func (s *server) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, l.Prompt)
+}
+
+// handleLoginComplete finishes the pending browser login with the redirect URL pasted
+// by the user.
+func (s *server) handleLoginComplete(w http.ResponseWriter, req *http.Request) {
+	var body loginCompleteRequest
+	if err := json.NewDecoder(io.LimitReader(req.Body, 64<<10)).Decode(&body); err != nil || body.URL == "" {
+		writeError(w, http.StatusBadRequest, errors.New("expected {\"url\": \"<redirect URL>\"}"))
+		return
+	}
+	if err := s.refresher.CompleteLogin(body.URL); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.status())
 }
 
 // writeLoginRequired tells the client that the user must log in, and how.

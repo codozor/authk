@@ -334,3 +334,34 @@ func TestServer_LoginNonInteractive(t *testing.T) {
 		t.Error("expected an error for a non-interactive flow")
 	}
 }
+
+func TestServer_LoginComplete(t *testing.T) {
+	r := testRefresher(&fakeClient{lifetime: time.Hour}, nil, nil)
+	fl := newFakeLogin(&oauth2.Token{AccessToken: "pasted", Expiry: time.Now().Add(time.Hour)})
+	r.SetLogin(fl.login)
+	client, _ := startAgent(t, r)
+	ctx := context.Background()
+
+	if err := client.CompleteLogin(ctx, "http://127.0.0.1/callback?code=c"); err == nil {
+		t.Error("CompleteLogin() without a pending login must fail")
+	}
+	if _, err := client.Login(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CompleteLogin(ctx, "http://127.0.0.1/callback?code=c&state=s"); err != nil {
+		t.Fatalf("CompleteLogin() error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if resp, err := client.Token(ctx, TypeAccessToken, 0); err == nil {
+			if resp.Token != "pasted" {
+				t.Errorf("token = %q", resp.Token)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no token after CompleteLogin")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

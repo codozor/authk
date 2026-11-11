@@ -38,6 +38,9 @@ func Render(c *Config) ([]byte, error) {
 			fmt.Fprintf(&b, "username: %s\n", quote(p.Username))
 			fmt.Fprintf(&b, "password: %s\n", quote(p.Password))
 		}
+		if p.Flow == FlowAuthorizationCode && p.RedirectPort != 0 {
+			fmt.Fprintf(&b, "redirectPort: %d\n", p.RedirectPort)
+		}
 
 		if !slices.Equal(p.Scopes, defaultScopes) {
 			quoted := make([]string, 0, len(p.Scopes))

@@ -15,10 +15,15 @@ profiles: [string]: #Profile
 	// How the client secret is sent: HTTP Basic header, or request body
 	clientAuth: *"basic" | "post" | "none"
 
-	flow: "client_credentials" | "password" | "device_code"
+	flow: "client_credentials" | "password" | "device_code" | "authorization_code"
 	if flow == "password" {
 		username: string
 		password: string
+	}
+	if flow == "authorization_code" {
+		// Port of the local redirect URI http://127.0.0.1:<port>/callback.
+		// Absent: a free port is chosen at each login.
+		redirectPort?: int & >0 & <65536
 	}
 
 	scopes: [...string] | *["openid", "profile", "email"]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -249,22 +250,33 @@ func TestRefresher_State(t *testing.T) {
 
 // fakeLogin is a LoginFunc whose logins end when release receives a result.
 type fakeLogin struct {
-	mu      sync.Mutex
-	starts  int
-	release chan error
-	token   *oauth2.Token
+	mu        sync.Mutex
+	starts    int
+	completed []string // URLs given to Complete, which then ends the login
+	release   chan error
+	token     *oauth2.Token
 }
 
 func newFakeLogin(token *oauth2.Token) *fakeLogin {
 	return &fakeLogin{release: make(chan error, 1), token: token}
 }
 
-func (f *fakeLogin) login(context.Context) (LoginPrompt, func(context.Context) (*oauth2.Token, error), error) {
+func (f *fakeLogin) login(context.Context) (*LoginSession, error) {
 	f.mu.Lock()
 	f.starts++
 	f.mu.Unlock()
 	prompt := LoginPrompt{URL: "https://idp/device", Code: "ABCD", Expiry: time.Now().Add(time.Minute)}
-	return prompt, func(ctx context.Context) (*oauth2.Token, error) {
+	complete := func(u string) error {
+		if !strings.HasPrefix(u, "http://127.0.0.1/callback") {
+			return errors.New("bad redirect")
+		}
+		f.mu.Lock()
+		f.completed = append(f.completed, u)
+		f.mu.Unlock()
+		f.release <- nil
+		return nil
+	}
+	return &LoginSession{Prompt: prompt, Complete: complete, Wait: func(ctx context.Context) (*oauth2.Token, error) {
 		select {
 		case err := <-f.release:
 			if err != nil {
@@ -274,7 +286,7 @@ func (f *fakeLogin) login(context.Context) (LoginPrompt, func(context.Context) (
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-	}, nil
+	}}, nil
 }
 
 func waitDone(t *testing.T, l *Login) {
@@ -421,5 +433,29 @@ func TestRefresher_StartLoginNonInteractive(t *testing.T) {
 	r := testRefresher(&fakeClient{}, &oauth2.Token{AccessToken: "a"}, nil)
 	if _, err := r.StartLogin(context.Background(), context.Background()); err == nil {
 		t.Error("expected an error for a non-interactive flow")
+	}
+}
+
+func TestRefresher_CompleteLogin(t *testing.T) {
+	r := testRefresher(&fakeClient{}, nil, nil)
+	fl := newFakeLogin(&oauth2.Token{AccessToken: "pasted", Expiry: time.Now().Add(time.Hour)})
+	r.SetLogin(fl.login)
+
+	if err := r.CompleteLogin("http://127.0.0.1/callback?code=c"); err == nil {
+		t.Error("CompleteLogin() without a pending login must fail")
+	}
+	l, err := r.StartLogin(context.Background(), context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.CompleteLogin("https://elsewhere"); err == nil {
+		t.Error("CompleteLogin() must report a rejected URL")
+	}
+	if err := r.CompleteLogin("http://127.0.0.1/callback?code=c"); err != nil {
+		t.Fatalf("CompleteLogin() error = %v", err)
+	}
+	waitDone(t, l)
+	if l.Err() != nil || r.Current() == nil || r.Current().AccessToken != "pasted" {
+		t.Errorf("after CompleteLogin: err %v, token %+v", l.Err(), r.Current())
 	}
 }

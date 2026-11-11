@@ -13,7 +13,7 @@
 
 ## Features
 
-- **OIDC Integration**: Client Credentials, Resource Owner Password Credentials and Device Authorization flows, for Keycloak, Authentik or any OIDC provider.
+- **OIDC Integration**: Client Credentials, Resource Owner Password Credentials, Device Authorization and Authorization Code with PKCE flows, for Keycloak, Authentik or any OIDC provider.
 - **Profiles**: several identities (realms, clients, users) in a single config file, with or without files to write.
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
 - **.env Management**: updates keys of `.env` files with the new tokens.
@@ -64,6 +64,8 @@ profiles: dev: {
 | `clientSecret` | no | Client secret. Absent: **public client** (Keycloak *Client authentication: Off*). |
 | `clientAuth` | no | How the secret is sent: `basic` (HTTP Basic header, default), `post` (request body), or `none` (public client: setting `clientSecret` too is an error). |
 | `flow` | yes | How tokens are obtained, see below. |
+| `username`, `password` | `password` flow | User credentials. |
+| `redirectPort` | no, `authorization_code` flow | Port of the redirect URI `http://127.0.0.1:<port>/callback`. Absent: a free port at each login. |
 | `scopes` | no | Default: `["openid", "profile", "email"]`. |
 | `targets` | no | Files to write the tokens to. Absent: nothing is written. |
 
@@ -73,13 +75,23 @@ profiles: dev: {
 |---|---|---|---|
 | `client_credentials` | — | A service, CI, or machine-to-machine access | Requires `clientSecret`. |
 | `password` | `username`, `password` | A user, non-interactively | Keycloak: enable *Direct access grants* on the client. |
-| `device_code` | — | A user, logging in through the browser | authk shows a URL and a code to enter, possibly on another device. See [Device code flow](#device-code-flow). |
+| `device_code` | — | A user, logging in through the browser | authk shows a URL and a code to enter, possibly on another device. See [Device code](#device-code). |
+| `authorization_code` | `redirectPort` (optional) | A user, logging in through the browser | Authorization code with PKCE: the browser comes back to authk on `http://127.0.0.1:<port>/callback`. See [Authorization code (PKCE)](#authorization-code-pkce). |
 
 Extra fields are only allowed with their flow: `username` is rejected with `client_credentials`, so a typo or a leftover field is reported when the file is loaded.
 
 Why `clientSecret` and `flow` are separate: the client secret authenticates the *application* on every call to the token endpoint, refreshes included, whatever the flow; the flow says how the *identity* is obtained. They combine freely, except `client_credentials`, which needs a secret.
 
-### Device code flow
+### Interactive flows
+
+`device_code` and `authorization_code` need you to log in, in a browser. No password is stored in the config. What follows applies to both:
+
+- `authk get` without agent logs in on every call: run an agent instead, which logs in once, in the foreground as with `--detach` (the detached agent goes to the background once you logged in).
+- The agent renews the token with the refresh token. When the session expires (Keycloak *SSO Session Max*, idle timeout, revoked token), it cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
+- Without refresh token, you must log in again each time the token expires. Add the `offline_access` scope to get one: required with Authentik, optional with Keycloak, where it gives an *offline token* that survives the end of the SSO session (each login then creates an offline session, listed in the account console).
+- An offline refresh token outlives your browser session: logging out does not stop a running agent. To cut its access, revoke the token in the provider; the agent notices at its next renewal (`authk agent refresh` forces it), and the access token already issued stays valid until it expires.
+
+#### Device code
 
 With `flow: "device_code"`, authk asks the provider for a code, then shows it:
 
@@ -90,11 +102,7 @@ Login required.
   The code expires at 10:32:00 (in 10m0s).
 ```
 
-It then waits until you log in, in any browser, on any machine: it also works over SSH, in a container, or with a detached agent. No password is stored in the config.
-
-- `authk get` without agent logs in on every call: run an agent instead, which logs in once.
-- The agent renews the token with the refresh token. When the session expires (Keycloak *SSO Session Max*, idle timeout, logout), it cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
-- Without refresh token, you must log in again each time the token expires. Add the `offline_access` scope to get one: required with Authentik, optional with Keycloak, where it gives an *offline token* that survives the end of the SSO session (each login then creates an offline session, listed in the account console).
+It then waits until you log in, in any browser, on any machine: it also works over SSH, in a container, or with a detached agent.
 
 Provider setup:
 
@@ -104,6 +112,34 @@ Provider setup:
   2. *System > Brands*, edit the brand: set *Device code flow* to this flow.
   3. In the OAuth2 provider, keep the *offline_access* scope mapping among the selected scopes, and request it in `scopes`.
   4. With `clientAuth: "none"`, set the provider *Client type* to *Public*; a *Confidential* provider needs `clientSecret`.
+  5. The code is valid for the provider *Access code validity* (1 minute by default): raise it, e.g. `minutes=5`.
+
+#### Authorization code (PKCE)
+
+With `flow: "authorization_code"`, authk listens on `http://127.0.0.1:<port>/callback`, opens the login page in your browser and waits for the provider to redirect the browser back to it, with PKCE (S256). This is the usual flow of a desktop application, and the most comfortable on a workstation: with an active SSO session, there is nothing to type.
+
+```
+Login required.
+  Open:  https://sso.example.com/realms/dev/protocol/openid-connect/auth?client_id=…
+  (opening it in your browser)
+  If the browser cannot reach this machine, paste here the address it ended on
+  (http://127.0.0.1:…/callback?…) and press Enter.
+  The login expires at 10:32:00 (in 5m0s).
+```
+
+- **Port**: `redirectPort` fixes it (e.g. `8765`, redirect URI `http://127.0.0.1:8765/callback`). Without it, a free port is chosen at each login, which the provider must accept (see below).
+- **Browser**: authk uses `$BROWSER` if set, else the desktop opener (`xdg-open` with a display, `open`, Windows). Set `AUTHK_NO_BROWSER=1` to only print the URL.
+- **Remote machine** (SSH, VS Code Remote): the redirect must reach the machine running authk:
+  - VS Code Remote: its terminals set `$BROWSER` to open the page on your computer, and forward the callback port automatically. If that port is already busy on your computer, VS Code forwards it to another one and the redirect fails: use the paste below.
+  - SSH: `ssh -L 8765:127.0.0.1:8765 host`, with `redirectPort: 8765`.
+  - Otherwise, the browser ends on an error page ("unable to connect"): copy its address and paste it in the terminal where authk waits (`authk get`, `authk agent`, `authk agent --detach` while it waits, or `authk agent login`). authk checks that it belongs to the pending login.
+- **Device code or authorization code?** Prefer authorization code on a workstation, device code on machines where no browser can reach authk (servers, containers) or to log in from another device.
+
+Provider setup:
+
+- **Keycloak**: in the client, keep *Standard flow* enabled and add the redirect URI to *Valid redirect URIs*: `http://127.0.0.1:8765/callback` with `redirectPort: 8765`. Optionally, in *Advanced*, set *Proof Key for Code Exchange Code Challenge Method* to `S256` to require PKCE.
+- **Authentik**: in the OAuth2 provider, add the redirect URI: `http://127.0.0.1:8765/callback` (*Strict*) with `redirectPort: 8765`, or `http://127\.0\.0\.1:\d+/callback` (*Regex*) to accept any port. Keep the *offline_access* scope mapping, as for device code. *Client type* *Public* with `clientAuth: "none"`, or *Confidential* with `clientSecret`.
+- Write `127.0.0.1`, not `localhost`: providers compare redirect URIs as strings.
 
 ### Targets
 
@@ -228,6 +264,19 @@ profiles: me: {
 }
 ```
 
+### Authorization code (PKCE, fixed port)
+
+```cue
+profiles: me: {
+	issuer:       "https://authentik.example.com/application/o/my-app/"
+	clientId:     "my-client-id"
+	clientAuth:   "none"
+	flow:         "authorization_code"
+	redirectPort: 8765
+	scopes: ["openid", "profile", "email", "offline_access"]
+}
+```
+
 ### Authentik (device code)
 
 ```cue
@@ -300,7 +349,7 @@ This is the main mode. The agent fetches a token, writes it to the profile targe
 ./authk agent --detach    # in the background (-d)
 ```
 
-With the `device_code` flow, the agent shows the login code and waits for you, in the foreground as with `--detach`: the detached agent goes to the background once you logged in.
+With an interactive flow (`device_code`, `authorization_code`), the agent shows the login and waits for you, in the foreground as with `--detach`: the detached agent goes to the background once you logged in.
 
 While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
 
@@ -310,7 +359,7 @@ An agent serves one profile of a config file. Several agents can run at the same
 ./authk agent list                # list running agents (alias: ls; --wide, --json)
 ./authk agent status [NAME|ID]    # show an agent state (--json available)
 ./authk agent refresh [NAME|ID]   # renew the token now
-./authk agent login [NAME|ID]     # log in again (device_code, once the session expired)
+./authk agent login [NAME|ID]     # log in again (interactive flows, once the session expired)
 ./authk agent logs [NAME|ID] -f   # follow the logs of a detached agent
 ./authk agent stop [NAME|ID]      # stop an agent
 ./authk agent stop --all          # stop every agent
@@ -390,7 +439,7 @@ When several agents serve the profile (one per `.env` file), `get` uses the one 
 **Flags:**
 - `--id-token`: Print ID Token instead of Access Token
 - `--min-ttl`: Minimum remaining validity of a token served by the agent (default: `10s`)
-- `--no-agent`: Always request a new token, even if an agent runs
+- `--direct`: Request a new token from the provider directly, bypassing any running agent
 
 ### Inspect Token
 

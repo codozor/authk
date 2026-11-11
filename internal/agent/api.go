@@ -40,6 +40,11 @@ type Status struct {
 	Login         *LoginPrompt `json:"login,omitempty"`         // pending login
 }
 
+// loginCompleteRequest is the body of POST /v1/login/complete.
+type loginCompleteRequest struct {
+	URL string `json:"url"`
+}
+
 // codeLoginRequired marks an error response caused by ErrLoginRequired.
 const codeLoginRequired = "login_required"
 

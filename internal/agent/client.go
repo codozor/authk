@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,20 +80,41 @@ func (c *Client) Login(ctx context.Context) (*LoginPrompt, error) {
 	return &prompt, nil
 }
 
+// CompleteLogin finishes the pending browser login of the agent with the URL the browser
+// was redirected to.
+func (c *Client) CompleteLogin(ctx context.Context, redirectURL string) error {
+	body, err := json.Marshal(loginCompleteRequest{URL: redirectURL})
+	if err != nil {
+		return err
+	}
+	return c.doBody(ctx, http.MethodPost, "/v1/login/complete", body, nil)
+}
+
 // Stop asks the agent to stop.
 func (c *Client) Stop(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/stop", nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, out any) error {
+	return c.doBody(ctx, method, path, nil, out)
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, in []byte, out any) error {
 	if _, err := os.Stat(c.socket); errors.Is(err, os.ErrNotExist) {
 		return ErrNotRunning
 	}
 
 	// The host is ignored: requests go to the socket
-	req, err := http.NewRequestWithContext(ctx, method, "http://authk"+path, nil)
+	var reqBody io.Reader
+	if in != nil {
+		reqBody = bytes.NewReader(in)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://authk"+path, reqBody)
 	if err != nil {
 		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
