@@ -36,6 +36,22 @@ jobs:
         with:
           path-to-profile: coverage.out
 
+  integration:
+    name: Integration (Keycloak)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Start Keycloak
+        run: make keycloak-up CONTAINER=docker
+      - name: Run integration tests
+        run: make integration
+      - name: Keycloak logs
+        if: failure()
+        run: docker logs authk-keycloak
+
   build:
     name: Build
     runs-on: ubuntu-latest
