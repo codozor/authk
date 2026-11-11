@@ -92,7 +92,7 @@ Why `clientSecret` and `flow` are separate: the client secret authenticates the 
 - The refresh token is stored (see [Stored sessions](#stored-sessions)): restarting the agent, or `authk get` without agent, reuses the session instead of logging in again.
 - When the session expires (Keycloak *SSO Session Max*, idle timeout, revoked token), the agent cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
 - Without refresh token, you must log in again each time the token expires. Add the `offline_access` scope to get one: required with Authentik, optional with Keycloak, where it gives an *offline token* that survives the end of the SSO session (each login then creates an offline session, listed in the account console).
-- An offline refresh token outlives your browser session: logging out does not stop a running agent. To cut its access, revoke the token in the provider; the agent notices at its next renewal (`authk agent refresh` forces it), and the access token already issued stays valid until it expires.
+- An offline refresh token outlives your browser session: logging out of the provider in the browser does not stop authk. `authk logout` revokes the stored session (see below); a running agent notices at its next renewal (`authk agent refresh` forces it), and the access token already issued stays valid until it expires.
 
 #### Stored sessions
 
@@ -109,6 +109,17 @@ After a login, and after each renewal, authk stores the refresh token, so that t
 - The session is shared by the runs of a profile: same config file, profile, issuer, client and scopes. Changing the scopes asks for a new login.
 - With refresh token rotation (Keycloak *Revoke Refresh Token*), each refresh token works once: authk serializes the refreshes of a profile with a lock and always uses the newest stored token, so an agent and `authk get --direct` can run at the same time.
 - A refresh token rejected by the provider (expired, revoked) is deleted. Keycloak tells when the session expires (`refresh_expires_in`): `authk agent status` shows it on the `Session` line, and an expired stored token is not even tried.
+
+#### Login and logout
+
+```bash
+authk login -p me     # log in and store the session, without agent
+authk logout -p me    # delete the stored session and revoke it at the provider
+```
+
+- `authk login` logs in even if a session is stored (e.g. to change user). Running agents of the profile switch to the new session. Use it before scripts: `authk get` then reuses the session.
+- `authk get` logs in when there is no stored session, showing the prompt on stderr. When stderr is not a terminal (cron, CI, output redirected), nobody would see it: `get` fails at once and tells you to run `authk login`.
+- `authk logout` deletes the stored session, then revokes it at the provider (`revocation_endpoint`, RFC 7009), which ends the session there too. Without network, the session is deleted locally, and stays valid at the provider until it expires. Running agents keep their access token until it expires, then need a login: `logout` lists them, stop them with `authk agent stop`.
 
 #### Device code
 
@@ -451,7 +462,7 @@ authk get -p me        # another profile
 authk get --id-token   # the ID Token instead of the Access Token
 ```
 
-If an agent serves the profile, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider. If the agent runs but fails, `get` returns its error instead of authenticating on its own.
+If an agent serves the profile, its current token is printed (renewed first if it expires within `--min-ttl`). Otherwise a new token is requested from the provider: for an interactive flow, from the stored session, or by logging in (see [Login and logout](#login-and-logout)). If the agent runs but fails, `get` returns its error instead of authenticating on its own.
 
 When several agents serve the profile (one per `.env` file), `get` uses the one writing the `.env` file found from the current directory, or given with `--env`; if none matches, it fails and lists them. Set `AUTHK_SOCK` to target a specific agent socket.
 

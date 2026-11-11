@@ -17,7 +17,12 @@ import (
 // flows): it logs in only when the stored session cannot be refreshed.
 type session struct {
 	*oidc.Client
-	keeper *tokenstore.Keeper // nil: nothing stored
+	profile *config.Profile
+	keeper  *tokenstore.Keeper // nil: nothing stored
+
+	// noPrompt makes GetToken fail instead of logging in, when nobody can see the
+	// login prompt (stderr is not a terminal: cron, CI, a pipe)
+	noPrompt bool
 }
 
 // newSession returns the session of a profile.
@@ -26,9 +31,18 @@ func newSession(p *config.Profile) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &session{Client: client}
-	if !client.Interactive() {
-		return s, nil
+	keeper, err := newKeeper(p)
+	if err != nil {
+		return nil, err
+	}
+	return &session{Client: client, profile: p, keeper: keeper}, nil
+}
+
+// newKeeper returns the refresh token store of a profile, nil for a flow that does not
+// store it or with tokenStore "none". It needs no network.
+func newKeeper(p *config.Profile) (*tokenstore.Keeper, error) {
+	if !p.Interactive() {
+		return nil, nil
 	}
 	backend, err := tokenstore.Open(p.TokenStore)
 	if err != nil {
@@ -38,9 +52,9 @@ func newSession(p *config.Profile) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.keeper = tokenstore.NewKeeper(backend, tokenstore.Key(p, configPath))
-	log.Debug().Str("store", s.keeper.Backend()).Msg("Refresh token store")
-	return s, nil
+	keeper := tokenstore.NewKeeper(backend, tokenstore.Key(p, configPath))
+	log.Debug().Str("store", keeper.Backend()).Msg("Refresh token store")
+	return keeper, nil
 }
 
 // RefreshToken refreshes old, or the stored session when old is nil or older.
@@ -58,10 +72,22 @@ func (s *session) GetToken(ctx context.Context) (*oauth2.Token, error) {
 	if err != nil || token != nil {
 		return token, err
 	}
-	if token, err = s.Client.GetToken(ctx); err != nil {
+	if s.noPrompt {
+		return nil, fmt.Errorf("%w for profile %s, and nobody can see the login prompt here: run \"authk login -p %s\" in a terminal first",
+			agent.ErrLoginRequired, s.profile.Name, s.profile.Name)
+	}
+	return s.login(ctx)
+}
+
+// login logs in, even if a session is stored, and stores the new session.
+func (s *session) login(ctx context.Context) (*oauth2.Token, error) {
+	token, err := s.Client.GetToken(ctx)
+	if err != nil {
 		return nil, err
 	}
-	s.keeper.Save(ctx, token)
+	if err := s.keeper.Save(ctx, token); err != nil {
+		log.Warn().Err(err).Msg("The next run will have to log in")
+	}
 	return token, nil
 }
 
@@ -85,8 +111,8 @@ func (s *session) restore(ctx context.Context) (*oauth2.Token, error) {
 	return nil, fmt.Errorf("failed to refresh the stored session: %w", err)
 }
 
-// login adapts the interactive login for the agent refresher, storing the new session.
-func (s *session) login() agent.LoginFunc {
+// agentLogin adapts the interactive login for the agent refresher, storing the new session.
+func (s *session) agentLogin() agent.LoginFunc {
 	start := agentLogin(s.Client)
 	return func(ctx context.Context) (*agent.LoginSession, error) {
 		ls, err := start(ctx)
@@ -97,7 +123,9 @@ func (s *session) login() agent.LoginFunc {
 		ls.Wait = func(ctx context.Context) (*oauth2.Token, error) {
 			token, err := wait(ctx)
 			if err == nil {
-				s.keeper.Save(ctx, token)
+				if err := s.keeper.Save(ctx, token); err != nil {
+					log.Warn().Err(err).Msg("The next agent will have to log in")
+				}
 			}
 			return token, err
 		}

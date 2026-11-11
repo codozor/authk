@@ -215,7 +215,9 @@ func TestKeeper_SaveAfterLogin(t *testing.T) {
 	k := NewKeeper(mem, "k")
 	token := &oauth2.Token{AccessToken: "at", RefreshToken: "rt"}
 	token = token.WithExtra(map[string]any{"refresh_expires_in": float64(1800)})
-	k.Save(context.Background(), token)
+	if err := k.Save(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
 
 	e, err := mem.Load("k")
 	if err != nil {
@@ -229,7 +231,9 @@ func TestKeeper_SaveAfterLogin(t *testing.T) {
 	}
 
 	// No refresh token: nothing stored, the previous one is kept
-	k.Save(context.Background(), &oauth2.Token{AccessToken: "at"})
+	if err := k.Save(context.Background(), &oauth2.Token{AccessToken: "at"}); err != nil {
+		t.Fatal(err)
+	}
 	if mem.stored("k") != "rt" {
 		t.Fatal("a token without refresh token replaced the stored one")
 	}
@@ -242,7 +246,9 @@ func TestKeeper_Nil(t *testing.T) {
 	if err != nil || token.RefreshToken != "rt1" {
 		t.Fatalf("got %v, %v", token, err)
 	}
-	k.Save(context.Background(), token) // no-op
+	if err := k.Save(context.Background(), token); err != nil { // no-op
+		t.Fatal(err)
+	}
 	if k.Backend() != "none" {
 		t.Fatalf("backend %q", k.Backend())
 	}
@@ -462,5 +468,26 @@ func TestKey(t *testing.T) {
 	}
 	if Key(&base, "/other/authk.cue") == key {
 		t.Error("another config file must give another key")
+	}
+}
+
+func TestKeeper_Forget(t *testing.T) {
+	isolate(t)
+	mem := newMem()
+	k := NewKeeper(mem, "k")
+	if rt, err := k.Forget(context.Background()); rt != "" || err != nil {
+		t.Fatalf("nothing stored: got %q, %v", rt, err)
+	}
+	_ = mem.Save("k", &Entry{RefreshToken: "rt0", RefreshExpiry: time.Now().Add(-time.Minute)})
+	rt, err := k.Forget(context.Background())
+	if rt != "rt0" || err != nil {
+		t.Fatalf("got %q, %v; want the stored token, even expired", rt, err)
+	}
+	if _, err := mem.Load("k"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("the session is still stored")
+	}
+	var nilKeeper *Keeper
+	if rt, err := nilKeeper.Forget(context.Background()); rt != "" || err != nil {
+		t.Fatalf("nil keeper: got %q, %v", rt, err)
 	}
 }
