@@ -18,6 +18,7 @@
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
 - **Persistent sessions**: after a browser login, the refresh token is kept in the OS keyring (or a private file), so restarting the agent does not ask you to log in again.
 - **.env Management**: updates keys of `.env` files with the new tokens.
+- **Command Runner**: `authk exec` runs a command with the tokens in its environment, never written to disk.
 - **Configurable**: uses CUE for flexible and type-safe configuration, with secrets from env, files, SOPS or Kubernetes.
 
 ## Installation
@@ -470,6 +471,31 @@ When several agents serve the profile (one per `.env` file), `get` uses the one 
 - `--id-token`: Print ID Token instead of Access Token
 - `--min-ttl`: Minimum remaining validity of a token served by the agent (default: `10s`)
 - `--direct`: Request a new token from the provider directly, bypassing any running agent
+
+### Run a Command with the Token
+
+Runs a command with valid tokens in its environment, without writing them to a file:
+
+```bash
+authk exec -- terraform apply
+authk exec -p me -- ./script.sh
+authk exec --var API_TOKEN --var ID=id_token -- env
+```
+
+The tokens come from the agent if one serves the profile, otherwise from the provider, as with `get`. The variables are:
+
+- the keys of the profile targets: a target `{key: "TOKEN"}` gives `TOKEN=<access token>`, an `id_token` target the ID Token;
+- for a profile without targets, `ACCESS_TOKEN`, and `ID_TOKEN` when the provider returns one;
+- with `--var`, only those given: `NAME` for the access token, `NAME=id_token` for the ID Token.
+
+The environment of a process cannot change once it started: a command running longer than the token lifetime must get new tokens itself (`authk get`), or use an agent writing a `.env` file.
+
+On Unix, authk replaces itself with the command: signals and the exit code are the command's own. On Windows, authk waits for the command and returns its exit code. Flags after the command name belong to the command (`authk exec ls -l`); `--` is only needed when the command name starts with `-`.
+
+**Flags:**
+- `--var`: Variable to set, `NAME` or `NAME=id_token`; repeatable (default: the keys of the profile targets)
+- `--min-ttl`: Minimum remaining validity of the tokens (default: `1m`)
+- `--direct`: Request new tokens from the provider directly, bypassing any running agent
 
 ### Inspect Token
 

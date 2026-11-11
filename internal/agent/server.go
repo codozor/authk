@@ -154,7 +154,7 @@ func (s *server) handleToken(w http.ResponseWriter, req *http.Request) {
 	if typ == TypeIDToken {
 		idToken, ok := token.Extra("id_token").(string)
 		if !ok || idToken == "" {
-			writeError(w, http.StatusNotFound, errors.New("no ID Token in the current token response"))
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: ErrNoIDToken.Error(), Code: codeNoIDToken})
 			return
 		}
 		resp.Token = idToken

@@ -17,6 +17,10 @@ import (
 // ErrNotRunning is returned by Client methods when no agent listens on the socket.
 var ErrNotRunning = errors.New("agent is not running")
 
+// ErrNoIDToken is returned by Token when an ID Token is requested and the provider did
+// not return one.
+var ErrNoIDToken = errors.New("no ID Token in the current token response")
+
 // Client talks to an agent over its socket.
 type Client struct {
 	socket string
@@ -134,9 +138,12 @@ func (c *Client) doBody(ctx context.Context, method, path string, in []byte, out
 	if resp.StatusCode >= 300 {
 		var e errorResponse
 		if json.Unmarshal(body, &e) == nil && e.Error != "" {
-			if e.Code == codeLoginRequired {
+			switch e.Code {
+			case codeLoginRequired:
 				// The message already says login required
 				return &loginRequiredError{msg: e.Error}
+			case codeNoIDToken:
+				return fmt.Errorf("agent: %w", ErrNoIDToken)
 			}
 			return fmt.Errorf("agent: %s", e.Error)
 		}
