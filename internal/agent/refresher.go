@@ -26,14 +26,23 @@ var ErrLoginRequired = errors.New("login required")
 // LoginPrompt tells the user how to log in.
 type LoginPrompt struct {
 	URL         string    `json:"url"`
-	Code        string    `json:"code"`
-	CompleteURL string    `json:"completeUrl,omitempty"` // URL containing the code
+	Code        string    `json:"code,omitempty"`        // device_code: the code to enter
+	CompleteURL string    `json:"completeUrl,omitempty"` // device_code: URL containing the code
 	Expiry      time.Time `json:"expiry,omitzero"`
+	// Browser is set for a login redirecting the browser to a local callback: the URL
+	// the browser ended on can then be pasted (CompleteLogin).
+	Browser bool `json:"browser,omitempty"`
 }
 
-// LoginFunc starts an interactive login: it returns what the user must do and a
-// function waiting until they did.
-type LoginFunc func(ctx context.Context) (LoginPrompt, func(context.Context) (*oauth2.Token, error), error)
+// LoginSession is an interactive login started by a LoginFunc.
+type LoginSession struct {
+	Prompt   LoginPrompt
+	Wait     func(context.Context) (*oauth2.Token, error) // waits until the user logged in
+	Complete func(redirectURL string) error               // nil if the login takes no URL
+}
+
+// LoginFunc starts an interactive login.
+type LoginFunc func(ctx context.Context) (*LoginSession, error)
 
 // Refresher owns the current token and renews it before it expires.
 // It is the only component allowed to renew: with refresh token rotation (Keycloak
@@ -66,9 +75,10 @@ type Refresher struct {
 type Login struct {
 	Prompt LoginPrompt
 
-	ready chan struct{} // closed when Prompt is set, or the start failed
-	done  chan struct{} // closed when the login ends
-	err   error         // set before done is closed
+	ready    chan struct{} // closed when Prompt is set, or the start failed
+	done     chan struct{} // closed when the login ends
+	err      error         // set before done is closed
+	complete func(string) error
 }
 
 // Done is closed when the login ends.
@@ -171,7 +181,7 @@ func (r *Refresher) StartLogin(ctx, lifetime context.Context) (*Login, error) {
 	r.pending = l
 	r.mu.Unlock()
 
-	prompt, wait, err := r.login(lifetime)
+	session, err := r.login(lifetime)
 	if err != nil {
 		l.err = err
 		r.mu.Lock()
@@ -182,12 +192,13 @@ func (r *Refresher) StartLogin(ctx, lifetime context.Context) (*Login, error) {
 		close(l.done)
 		return nil, err
 	}
-	l.Prompt = prompt
+	l.Prompt = session.Prompt
+	l.complete = session.Complete
 	close(l.ready)
-	log.Info().Str("url", prompt.URL).Str("code", prompt.Code).Time("expires", prompt.Expiry).Msg("Waiting for the user to log in")
+	log.Info().Str("url", l.Prompt.URL).Str("code", l.Prompt.Code).Time("expires", l.Prompt.Expiry).Msg("Waiting for the user to log in")
 
 	go func() {
-		token, err := wait(lifetime)
+		token, err := session.Wait(lifetime)
 		if err == nil {
 			r.setToken(token)
 			log.Info().Msg("Logged in")
@@ -204,6 +215,26 @@ func (r *Refresher) StartLogin(ctx, lifetime context.Context) (*Login, error) {
 		close(l.done)
 	}()
 	return l, nil
+}
+
+// CompleteLogin finishes the pending browser login with the URL the browser was
+// redirected to, when it could not reach the local callback.
+func (r *Refresher) CompleteLogin(redirectURL string) error {
+	r.mu.Lock()
+	l := r.pending
+	r.mu.Unlock()
+	if l == nil {
+		return errors.New("no login in progress")
+	}
+	select {
+	case <-l.ready:
+	default:
+		return errors.New("the login is starting, try again")
+	}
+	if l.complete == nil {
+		return errors.New("this login does not take a redirect URL")
+	}
+	return l.complete(redirectURL)
 }
 
 // setToken installs a token obtained by a login, like a renewal.

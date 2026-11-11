@@ -39,6 +39,7 @@ const (
 	FlowClientCredentials = "client_credentials"
 	FlowPassword          = "password"
 	FlowDeviceCode        = "device_code"
+	FlowAuthorizationCode = "authorization_code"
 )
 
 // Client authentication methods (clientAuth).
@@ -72,8 +73,9 @@ type Profile struct {
 	ClientSecret string   `json:"clientSecret,omitempty"`
 	ClientAuth   string   `json:"clientAuth"`
 	Flow         string   `json:"flow"`
-	Username     string   `json:"username,omitempty"` // password flow
-	Password     string   `json:"password,omitempty"` // password flow
+	Username     string   `json:"username,omitempty"`     // password flow
+	Password     string   `json:"password,omitempty"`     // password flow
+	RedirectPort int      `json:"redirectPort,omitempty"` // authorization_code flow
 	Scopes       []string `json:"scopes"`
 	Targets      []Target `json:"targets,omitempty"`
 }

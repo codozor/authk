@@ -127,7 +127,12 @@ func detachAgent(cmd *cobra.Command) error {
 				}
 				// Interactive flow: the agent waits for the user, until the code expires
 				if l := a.Status.Login; l != nil && !prompted {
-					printLoginPrompt(cmd.ErrOrStderr(), *l)
+					canPaste := l.Browser && stdinIsTerminal()
+					showLogin(cmd.ErrOrStderr(), *l, canPaste)
+					if canPaste {
+						agentClient := agent.NewClient(a.Socket)
+						readPastedURLs(cmd.ErrOrStderr(), func(u string) error { return agentClient.CompleteLogin(ctx, u) })
+					}
 					prompted = true
 					if !l.Expiry.IsZero() {
 						deadline = time.After(time.Until(l.Expiry) + detachLoginGrace)

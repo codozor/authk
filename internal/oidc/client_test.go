@@ -560,8 +560,8 @@ func TestClient_GetToken_DeviceCode(t *testing.T) {
 	if !client.Interactive() {
 		t.Error("device_code must be interactive")
 	}
-	var shown []DeviceLogin
-	client.OnDeviceLogin = func(l DeviceLogin) { shown = append(shown, l) }
+	var shown []*Login
+	client.OnLogin = func(l *Login) { shown = append(shown, l) }
 
 	token, err := client.GetToken(context.Background())
 	if err != nil {
@@ -570,7 +570,7 @@ func TestClient_GetToken_DeviceCode(t *testing.T) {
 	if token.AccessToken != "device_access" || token.RefreshToken != "device_refresh" {
 		t.Errorf("unexpected token %+v", token)
 	}
-	if len(shown) != 1 || shown[0].UserCode != "ABCD-EFGH" || !strings.HasSuffix(shown[0].VerificationURIComplete, "?code=ABCD-EFGH") {
+	if len(shown) != 1 || shown[0].UserCode != "ABCD-EFGH" || !strings.HasSuffix(shown[0].CompleteURL, "?code=ABCD-EFGH") {
 		t.Errorf("unexpected login shown: %+v", shown)
 	}
 	if time.Until(shown[0].Expiry) <= 0 {
@@ -590,9 +590,9 @@ func TestClient_DeviceLogin_PublicClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	l, err := client.StartDeviceLogin(context.Background())
+	l, err := client.StartLogin(context.Background())
 	if err != nil {
-		t.Fatalf("StartDeviceLogin() error = %v", err)
+		t.Fatalf("StartLogin() error = %v", err)
 	}
 	if _, err := l.Wait(context.Background()); err != nil {
 		t.Fatalf("Wait() error = %v", err)
@@ -615,7 +615,7 @@ func TestClient_DeviceLogin_Errors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			l, err := client.StartDeviceLogin(context.Background())
+			l, err := client.StartLogin(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -633,7 +633,7 @@ func TestClient_DeviceCode_NotSupportedByProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	client.OnDeviceLogin = func(DeviceLogin) {}
+	client.OnLogin = func(*Login) {}
 	if _, err := client.GetToken(context.Background()); err == nil || !strings.Contains(err.Error(), "device_authorization_endpoint") {
 		t.Errorf("expected a missing endpoint error, got %v", err)
 	}

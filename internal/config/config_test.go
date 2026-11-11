@@ -242,6 +242,14 @@ profiles: tv: {
 	clientId: "tv"
 	flow:     "device_code"
 }
+
+profiles: web: {
+	issuer:       "https://kc.example.com/realms/dev"
+	clientId:     "web"
+	clientAuth:   "none"
+	flow:         "authorization_code"
+	redirectPort: 8765
+}
 `
 
 func TestLoadV2_Profiles(t *testing.T) {
@@ -250,7 +258,7 @@ func TestLoadV2_Profiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got := cfg.ProfileNames(); !reflect.DeepEqual(got, []string{"dev", "prod", "tv"}) {
+	if got := cfg.ProfileNames(); !reflect.DeepEqual(got, []string{"dev", "prod", "tv", "web"}) {
 		t.Errorf("profiles = %v", got)
 	}
 
@@ -281,6 +289,10 @@ func TestLoadV2_Profiles(t *testing.T) {
 	// did not prevent using dev, but fails when prod is selected
 	if _, err := cfg.Profile("prod"); err == nil || !strings.Contains(err.Error(), "secrets") {
 		t.Errorf("expected a secret resolution error for prod, got %v", err)
+	}
+	web, err := cfg.Profile("web")
+	if err != nil || web.Flow != FlowAuthorizationCode || web.RedirectPort != 8765 || !web.Public() {
+		t.Errorf("web profile = %+v, %v", web, err)
 	}
 }
 
@@ -347,17 +359,19 @@ func TestLoadV2_Invalid(t *testing.T) {
 			"issuer: \"https://x\"\nclientId: \"c\"\nclientSecret: \"s\"\n" + body + "\n}\n"
 	}
 	tests := map[string]string{
-		"no profile":                   "package config\nversion: 2\nprofiles: {}\n",
-		"unknown default profile":      profile(`flow: "client_credentials"`) + `defaultProfile: "nope"` + "\n",
-		"missing flow":                 profile(``),
-		"unknown flow":                 profile(`flow: "implicit"`),
-		"password without username":    profile(`flow: "password"` + "\npassword: \"p\""),
-		"username with another flow":   profile(`flow: "client_credentials"` + "\nusername: \"u\""),
-		"typo in a field":              profile(`flow: "client_credentials"` + "\nscope: [\"openid\"]"),
-		"unknown clientAuth":           profile(`flow: "client_credentials"` + "\nclientAuth: \"client_secret_basic\""),
-		"target without key":           profile(`flow: "client_credentials"` + "\ntargets: [{file: \".env\"}]"),
-		"v1 field in a version 2 file": profile(`flow: "client_credentials"` + "\nissuerUrl: \"https://x\""),
-		"unsupported version":          "package config\nversion: 3\n",
+		"no profile":                     "package config\nversion: 2\nprofiles: {}\n",
+		"unknown default profile":        profile(`flow: "client_credentials"`) + `defaultProfile: "nope"` + "\n",
+		"missing flow":                   profile(``),
+		"unknown flow":                   profile(`flow: "implicit"`),
+		"password without username":      profile(`flow: "password"` + "\npassword: \"p\""),
+		"username with another flow":     profile(`flow: "client_credentials"` + "\nusername: \"u\""),
+		"redirectPort with another flow": profile(`flow: "device_code"` + "\nredirectPort: 8765"),
+		"redirectPort out of range":      profile(`flow: "authorization_code"` + "\nredirectPort: 70000"),
+		"typo in a field":                profile(`flow: "client_credentials"` + "\nscope: [\"openid\"]"),
+		"unknown clientAuth":             profile(`flow: "client_credentials"` + "\nclientAuth: \"client_secret_basic\""),
+		"target without key":             profile(`flow: "client_credentials"` + "\ntargets: [{file: \".env\"}]"),
+		"v1 field in a version 2 file":   profile(`flow: "client_credentials"` + "\nissuerUrl: \"https://x\""),
+		"unsupported version":            "package config\nversion: 3\n",
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {

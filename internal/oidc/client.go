@@ -29,21 +29,9 @@ type Client struct {
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
 
-	// OnDeviceLogin is called by GetToken with what the user must do to log in, for
-	// the device_code flow. It must show it to the user.
-	OnDeviceLogin func(DeviceLogin)
-}
-
-// DeviceLogin is a pending device_code login: the user must open VerificationURI and
-// enter UserCode (or open VerificationURIComplete, which contains the code) before Expiry.
-type DeviceLogin struct {
-	UserCode                string
-	VerificationURI         string
-	VerificationURIComplete string
-	Expiry                  time.Time
-
-	client *Client
-	auth   *oauth2.DeviceAuthResponse
+	// OnLogin is called by GetToken with what the user must do to log in, for the
+	// interactive flows (device_code, authorization_code). It must show it to the user.
+	OnLogin func(*Login)
 }
 
 // NewClient discovers the OIDC provider of the profile. The profile must come from
@@ -106,21 +94,25 @@ func (c *Client) withHTTPClient(ctx context.Context) context.Context {
 
 // Interactive reports whether the flow of the profile needs the user to log in.
 func (c *Client) Interactive() bool {
-	return c.profile.Flow == config.FlowDeviceCode
+	switch c.profile.Flow {
+	case config.FlowDeviceCode, config.FlowAuthorizationCode:
+		return true
+	}
+	return false
 }
 
-// GetToken runs the flow of the profile to get a new token. For the device_code flow,
-// it calls OnDeviceLogin and waits until the user logs in.
+// GetToken runs the flow of the profile to get a new token. For interactive flows, it
+// calls OnLogin and waits until the user logs in.
 func (c *Client) GetToken(ctx context.Context) (*oauth2.Token, error) {
-	if c.profile.Flow == config.FlowDeviceCode {
-		if c.OnDeviceLogin == nil {
-			return nil, errors.New("the device_code flow needs a way to show the login code")
+	if c.Interactive() {
+		if c.OnLogin == nil {
+			return nil, fmt.Errorf("the %s flow needs a way to show the login", c.profile.Flow)
 		}
-		login, err := c.StartDeviceLogin(ctx)
+		login, err := c.StartLogin(ctx)
 		if err != nil {
 			return nil, err
 		}
-		c.OnDeviceLogin(*login)
+		c.OnLogin(login)
 		return login.Wait(ctx)
 	}
 	ctx = c.withHTTPClient(ctx)
@@ -151,71 +143,6 @@ func (c *Client) GetToken(ctx context.Context) (*oauth2.Token, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
-	}
-	c.verifyIDToken(ctx, token)
-	return token, nil
-}
-
-// StartDeviceLogin starts a device_code login (RFC 8628): the returned login tells what
-// the user must do, and its Wait method waits until they did.
-func (c *Client) StartDeviceLogin(ctx context.Context) (*DeviceLogin, error) {
-	if c.oauth2Config.Endpoint.DeviceAuthURL == "" {
-		return nil, errors.New("the provider does not support the device_code flow (no device_authorization_endpoint)")
-	}
-	ctx = c.withHTTPClient(ctx)
-
-	// oauth2 does not authenticate the client on the device endpoint: a confidential
-	// client sends its secret in the body, which Keycloak and Authentik accept.
-	var opts []oauth2.AuthCodeOption
-	if secret := c.oauth2Config.ClientSecret; secret != "" {
-		opts = append(opts, oauth2.SetAuthURLParam("client_secret", secret))
-	}
-	log.Info().Str("grant_type", "device_code").Msg("Using Device Authorization flow")
-	auth, err := c.oauth2Config.DeviceAuth(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start device login: %w", err)
-	}
-	return &DeviceLogin{
-		UserCode:                auth.UserCode,
-		VerificationURI:         auth.VerificationURI,
-		VerificationURIComplete: auth.VerificationURIComplete,
-		Expiry:                  auth.Expiry,
-		client:                  c,
-		auth:                    auth,
-	}, nil
-}
-
-// Wait polls the provider until the user logged in, refused, or the code expired.
-func (l *DeviceLogin) Wait(ctx context.Context) (*oauth2.Token, error) {
-	c := l.client
-	ctx = c.withHTTPClient(ctx)
-	token, err := c.oauth2Config.DeviceAccessToken(ctx, l.auth)
-	if err != nil {
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) {
-			switch re.ErrorCode {
-			case "expired_token":
-				return nil, errors.New("device login failed: the code expired before the user logged in")
-			case "access_denied":
-				return nil, errors.New("device login failed: the user refused the access")
-			case "invalid_client":
-				// The device endpoint often only checks client_id: a secret missing or
-				// wrong only shows here
-				if c.oauth2Config.ClientSecret == "" {
-					return nil, fmt.Errorf("device login failed: %w (the client is probably confidential: "+
-						"set clientSecret, or make the client public in the provider)", err)
-				}
-				return nil, fmt.Errorf("device login failed: %w (check clientSecret and clientAuth)", err)
-			}
-		}
-		if errors.Is(err, context.DeadlineExceeded) && !l.Expiry.IsZero() && !time.Now().Before(l.Expiry) {
-			return nil, errors.New("device login failed: the code expired before the user logged in")
-		}
-		return nil, fmt.Errorf("device login failed: %w", err)
-	}
-	if token.RefreshToken == "" {
-		log.Warn().Msg("No refresh token: you will have to log in again when the token expires " +
-			"(add the offline_access scope to get one)")
 	}
 	c.verifyIDToken(ctx, token)
 	return token, nil

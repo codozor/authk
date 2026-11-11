@@ -12,7 +12,7 @@ import (
 
 var (
 	showIDToken bool
-	getNoAgent  bool
+	getDirect   bool
 	getMinTTL   time.Duration
 )
 
@@ -34,7 +34,7 @@ OIDC provider.`,
 			typ = agent.TypeIDToken
 		}
 
-		if !getNoAgent {
+		if !getDirect {
 			client, err := agentForContext(cmd.Context())
 			if err != nil && !isNotRunning(err) {
 				return err
@@ -85,7 +85,7 @@ OIDC provider.`,
 
 func init() {
 	getCmd.Flags().BoolVar(&showIDToken, "id-token", false, "Print ID Token instead of Access Token")
-	getCmd.Flags().BoolVar(&getNoAgent, "no-agent", false, "Always request a new token, even if an agent runs")
+	getCmd.Flags().BoolVar(&getDirect, "direct", false, "Request a new token from the provider directly, bypassing any running agent")
 	getCmd.Flags().DurationVar(&getMinTTL, "min-ttl", 10*time.Second, "Minimum remaining validity of a token served by the agent")
 	rootCmd.AddCommand(getCmd)
 }
