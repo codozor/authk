@@ -25,6 +25,12 @@ profiles: [string]: #Profile
 		// Absent: a free port is chosen at each login.
 		redirectPort?: int & >0 & <65536
 	}
+	if flow == "device_code" || flow == "authorization_code" {
+		// Where the refresh token is kept between runs, to avoid logging in again:
+		// the OS keyring, a private file, or nowhere. "auto": the keyring when
+		// available, the file otherwise.
+		tokenStore: *"auto" | "keyring" | "file" | "none"
+	}
 
 	scopes: [...string] | *["openid", "profile", "email"]
 

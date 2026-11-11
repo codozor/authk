@@ -186,19 +186,24 @@ func runAgent(parent context.Context, envChanged bool) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := newOIDCClient(profile)
+	client, err := newSession(profile)
 	if err != nil {
 		return err
 	}
 
-	// Interactive flows log in once the agent serves, so that a detached agent can show
-	// the login prompt through its status. Others fail fast before.
+	// Interactive flows restore the stored session, or log in once the agent serves, so
+	// that a detached agent can show the login prompt through its status. Others fail
+	// fast before.
 	interactive := client.Interactive()
 	var token *oauth2.Token
-	if !interactive {
-		if token, err = client.GetToken(ctx); err != nil {
-			return fmt.Errorf("failed to get initial token: %w", err)
+	if interactive {
+		if token, err = client.restore(ctx); err != nil {
+			return err
 		}
+	} else if token, err = client.GetToken(ctx); err != nil {
+		return fmt.Errorf("failed to get initial token: %w", err)
+	}
+	if token != nil {
 		updateTargets(targets, token)
 	}
 
@@ -229,7 +234,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 
 	refresher := agent.NewRefresher(client, token, func(t *oauth2.Token) { updateTargets(targets, t) })
 	if interactive {
-		refresher.SetLogin(agentLogin(client))
+		refresher.SetLogin(client.login())
 	}
 	info := agent.Info{
 		ID:         id,
@@ -239,6 +244,9 @@ func runAgent(parent context.Context, envChanged bool) error {
 		Profile:    profile.Name,
 		Issuer:     profile.Issuer,
 		ClientID:   profile.ClientID,
+	}
+	if interactive {
+		info.TokenStore = client.keeper.Backend()
 	}
 	for _, t := range targets {
 		info.Targets = append(info.Targets, fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key))
@@ -250,7 +258,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return refresher.Run(gctx) })
 	g.Go(func() error { return agent.Serve(gctx, ln, refresher, info, stop) })
-	if interactive {
+	if token == nil {
 		g.Go(func() error { return initialLogin(gctx, refresher) })
 	}
 	if err := g.Wait(); err != nil {
@@ -390,6 +398,16 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	}
 	if l := st.Login; l != nil {
 		line("Login", "pending: open %s and enter the code %s", l.URL, l.Code)
+	}
+	if st.TokenStore != "" {
+		session := "stored in " + st.TokenStore
+		if st.TokenStore == "none" {
+			session = "not stored (tokenStore: none)"
+		}
+		if !st.SessionExpiry.IsZero() {
+			session += ", " + describeExpiry(st.SessionExpiry)
+		}
+		line("Session", "%s", session)
 	}
 	if !st.LastRenewal.IsZero() {
 		line("Last renewal", "%s", st.LastRenewal.Format(time.DateTime))

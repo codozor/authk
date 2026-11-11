@@ -49,6 +49,14 @@ const (
 	AuthNone  = "none"
 )
 
+// Refresh token stores (tokenStore), for the interactive flows.
+const (
+	StoreAuto    = "auto" // the keyring when available, the file otherwise
+	StoreKeyring = "keyring"
+	StoreFile    = "file"
+	StoreNone    = "none"
+)
+
 // Target types.
 const (
 	TargetAccessToken = "access_token"
@@ -76,6 +84,7 @@ type Profile struct {
 	Username     string   `json:"username,omitempty"`     // password flow
 	Password     string   `json:"password,omitempty"`     // password flow
 	RedirectPort int      `json:"redirectPort,omitempty"` // authorization_code flow
+	TokenStore   string   `json:"tokenStore,omitempty"`   // interactive flows
 	Scopes       []string `json:"scopes"`
 	Targets      []Target `json:"targets,omitempty"`
 }

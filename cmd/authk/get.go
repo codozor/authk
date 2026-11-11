@@ -60,7 +60,7 @@ OIDC provider.`,
 			return err
 		}
 
-		client, err := newOIDCClient(profile)
+		client, err := newSession(profile)
 		if err != nil {
 			return err
 		}
