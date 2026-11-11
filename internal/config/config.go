@@ -254,6 +254,10 @@ func (p *Profile) validate() error {
 	if p.ClientID == "" {
 		return errors.New("clientId is empty")
 	}
+	if p.ClientAuth == AuthNone && p.ClientSecret != "" {
+		return errors.New(`clientAuth is "none" (public client) but clientSecret is set: ` +
+			`remove clientAuth to send the secret, or remove clientSecret`)
+	}
 	switch p.Flow {
 	case FlowClientCredentials:
 		if p.Public() {

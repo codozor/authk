@@ -22,6 +22,9 @@ const (
 
 	// detachTimeout bounds the wait for the detached agent to be ready (first token).
 	detachTimeout = 2 * time.Minute
+	// detachLoginGrace is how long the wait goes on after the login code expired, for
+	// the agent to report the failure.
+	detachLoginGrace = 15 * time.Second
 	// logRetention is how long logs of stopped agents are kept.
 	logRetention = 7 * 24 * time.Hour
 )
@@ -48,7 +51,8 @@ func logDir() (string, error) {
 }
 
 // detachAgent starts the agent in the background, waits until it serves its first
-// token, and prints its ID. If it fails to start, its log is printed.
+// token, and prints its name. For an interactive flow, it shows the login prompt of the
+// agent meanwhile. If the agent fails to start, its log is printed.
 func detachAgent(cmd *cobra.Command) error {
 	dir, err := logDir()
 	if err != nil {
@@ -87,6 +91,7 @@ func detachAgent(cmd *cobra.Command) error {
 
 	ctx := cmd.Context()
 	deadline := time.After(detachTimeout)
+	prompted := false
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -112,10 +117,21 @@ func detachAgent(cmd *cobra.Command) error {
 				continue
 			}
 			for _, a := range agents {
-				if a.PID == child.Process.Pid && a.Status != nil {
+				if a.PID != child.Process.Pid || a.Status == nil {
+					continue
+				}
+				if a.Status.Ready {
 					_, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent %s started in the background (pid %d)\nLogs: authk agent logs %s\n",
 						a.Name, a.PID, a.Name)
 					return err
+				}
+				// Interactive flow: the agent waits for the user, until the code expires
+				if l := a.Status.Login; l != nil && !prompted {
+					printLoginPrompt(cmd.ErrOrStderr(), *l)
+					prompted = true
+					if !l.Expiry.IsZero() {
+						deadline = time.After(time.Until(l.Expiry) + detachLoginGrace)
+					}
 				}
 			}
 		}

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -482,16 +484,179 @@ func TestClient_RefreshToken_NoRefreshToken(t *testing.T) {
 	}
 }
 
-func TestClient_GetToken_UnsupportedFlow(t *testing.T) {
-	calls := 0
-	srv := newRefreshTestServer(t, &calls)
+// newDeviceTestServer returns a provider supporting the device_code flow. The token
+// endpoint answers authorization_pending pending times, then finalErr ("" for a token).
+func newDeviceTestServer(t *testing.T, pending int, finalErr string) (*httptest.Server, *[]url.Values) {
+	t.Helper()
+	var mu sync.Mutex
+	var deviceRequests []url.Values
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                                srv.URL,
+				"token_endpoint":                        srv.URL + "/token",
+				"device_authorization_endpoint":         srv.URL + "/device",
+				"jwks_uri":                              srv.URL + "/certs",
+				"response_types_supported":              []string{"code"},
+				"subject_types_supported":               []string{"public"},
+				"id_token_signing_alg_values_supported": []string{"RS256"},
+			})
+		case "/device":
+			_ = r.ParseForm()
+			mu.Lock()
+			deviceRequests = append(deviceRequests, r.PostForm)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":               "dev-code",
+				"user_code":                 "ABCD-EFGH",
+				"verification_uri":          srv.URL + "/activate",
+				"verification_uri_complete": srv.URL + "/activate?code=ABCD-EFGH",
+				"expires_in":                60,
+				"interval":                  1,
+			})
+		case "/token":
+			_ = r.ParseForm()
+			if r.PostForm.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" ||
+				r.PostForm.Get("device_code") != "dev-code" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
+				return
+			}
+			mu.Lock()
+			wait := pending > 0
+			pending--
+			mu.Unlock()
+			switch {
+			case wait:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+			case finalErr != "":
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"` + finalErr + `"}`))
+			default:
+				_ = json.NewEncoder(w).Encode(mockTokenResponse{
+					AccessToken: "device_access", RefreshToken: "device_refresh", TokenType: "Bearer", ExpiresIn: 300,
+				})
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &deviceRequests
+}
+
+func TestClient_GetToken_DeviceCode(t *testing.T) {
+	srv, deviceRequests := newDeviceTestServer(t, 1, "")
 	client, err := NewClient(&config.Profile{
-		Issuer: srv.URL, ClientID: "client", Flow: config.FlowDeviceCode,
+		Issuer: srv.URL, ClientID: "cli", ClientSecret: "sec", ClientAuth: config.AuthBasic, Flow: config.FlowDeviceCode,
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	if _, err := client.GetToken(context.Background()); !errors.Is(err, ErrFlowNotSupported) {
-		t.Errorf("expected ErrFlowNotSupported, got %v", err)
+	if !client.Interactive() {
+		t.Error("device_code must be interactive")
+	}
+	var shown []DeviceLogin
+	client.OnDeviceLogin = func(l DeviceLogin) { shown = append(shown, l) }
+
+	token, err := client.GetToken(context.Background())
+	if err != nil {
+		t.Fatalf("GetToken() error = %v", err)
+	}
+	if token.AccessToken != "device_access" || token.RefreshToken != "device_refresh" {
+		t.Errorf("unexpected token %+v", token)
+	}
+	if len(shown) != 1 || shown[0].UserCode != "ABCD-EFGH" || !strings.HasSuffix(shown[0].VerificationURIComplete, "?code=ABCD-EFGH") {
+		t.Errorf("unexpected login shown: %+v", shown)
+	}
+	if time.Until(shown[0].Expiry) <= 0 {
+		t.Errorf("expiry not set: %v", shown[0].Expiry)
+	}
+	// A confidential client authenticates on the device endpoint
+	if got := (*deviceRequests)[0].Get("client_secret"); got != "sec" {
+		t.Errorf("device request client_secret = %q, want sec", got)
+	}
+}
+
+func TestClient_DeviceLogin_PublicClient(t *testing.T) {
+	srv, deviceRequests := newDeviceTestServer(t, 0, "")
+	client, err := NewClient(&config.Profile{
+		Issuer: srv.URL, ClientID: "cli", ClientAuth: config.AuthNone, Flow: config.FlowDeviceCode,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	l, err := client.StartDeviceLogin(context.Background())
+	if err != nil {
+		t.Fatalf("StartDeviceLogin() error = %v", err)
+	}
+	if _, err := l.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	form := (*deviceRequests)[0]
+	if form.Has("client_secret") || form.Get("client_id") != "cli" {
+		t.Errorf("unexpected device request %v", form)
+	}
+}
+
+func TestClient_DeviceLogin_Errors(t *testing.T) {
+	for _, tc := range []struct{ code, want string }{
+		{"access_denied", "refused"},
+		{"expired_token", "expired"},
+		{"invalid_client", "set clientSecret, or make the client public"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			srv, _ := newDeviceTestServer(t, 0, tc.code)
+			client, err := NewClient(&config.Profile{Issuer: srv.URL, ClientID: "cli", ClientAuth: config.AuthNone, Flow: config.FlowDeviceCode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			l, err := client.StartDeviceLogin(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l.Wait(context.Background()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Wait() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestClient_DeviceCode_NotSupportedByProvider(t *testing.T) {
+	calls := 0
+	srv := newRefreshTestServer(t, &calls) // no device_authorization_endpoint
+	client, err := NewClient(&config.Profile{Issuer: srv.URL, ClientID: "client", Flow: config.FlowDeviceCode})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	client.OnDeviceLogin = func(DeviceLogin) {}
+	if _, err := client.GetToken(context.Background()); err == nil || !strings.Contains(err.Error(), "device_authorization_endpoint") {
+		t.Errorf("expected a missing endpoint error, got %v", err)
+	}
+}
+
+func TestNewClient_DiscoveryErrorIsShort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("\n\n<!DOCTYPE html>\n<html><body>Not Found</body></html>\n"))
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(&config.Profile{Issuer: srv.URL + "/application/o/app/", ClientID: "c", Flow: config.FlowDeviceCode})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "html") || strings.Contains(msg, "\n") {
+		t.Errorf("error contains the response body: %q", msg)
+	}
+	for _, want := range []string{srv.URL + "/application/o/app/.well-known/openid-configuration", "404", "check the issuer"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not contain %q", msg, want)
+		}
 	}
 }

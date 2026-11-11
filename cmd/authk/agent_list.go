@@ -114,9 +114,16 @@ func printAgentsTable(out io.Writer, agents []agent.Agent, wide bool) error {
 		}
 		token, writes := "not responding", "?"
 		if a.Status != nil {
-			token = shortExpiry(a.Status.Expiry)
-			if a.Status.LastError != "" {
-				token += " (error)"
+			switch {
+			case a.Status.Login != nil:
+				token = "LOGIN (pending)"
+			case a.Status.LoginRequired:
+				token = "LOGIN"
+			default:
+				token = shortExpiry(a.Status.Expiry)
+				if a.Status.LastError != "" {
+					token += " (error)"
+				}
 			}
 			files := make([]string, 0, len(a.Status.TargetFiles))
 			for _, f := range a.Status.TargetFiles {

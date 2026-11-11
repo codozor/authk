@@ -13,7 +13,7 @@
 
 ## Features
 
-- **OIDC Integration**: Client Credentials and Resource Owner Password Credentials flows, for Keycloak, Authentik or any OIDC provider.
+- **OIDC Integration**: Client Credentials, Resource Owner Password Credentials and Device Authorization flows, for Keycloak, Authentik or any OIDC provider.
 - **Profiles**: several identities (realms, clients, users) in a single config file, with or without files to write.
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
 - **.env Management**: updates keys of `.env` files with the new tokens.
@@ -62,7 +62,7 @@ profiles: dev: {
 | `issuer` | yes | Issuer URL of the realm / application (OIDC discovery is done from it). |
 | `clientId` | yes | Client ID registered in the identity provider. |
 | `clientSecret` | no | Client secret. Absent: **public client** (Keycloak *Client authentication: Off*). |
-| `clientAuth` | no | How the secret is sent: `basic` (HTTP Basic header, default), `post` (request body), or `none` (public client, the secret is ignored). |
+| `clientAuth` | no | How the secret is sent: `basic` (HTTP Basic header, default), `post` (request body), or `none` (public client: setting `clientSecret` too is an error). |
 | `flow` | yes | How tokens are obtained, see below. |
 | `scopes` | no | Default: `["openid", "profile", "email"]`. |
 | `targets` | no | Files to write the tokens to. Absent: nothing is written. |
@@ -73,11 +73,37 @@ profiles: dev: {
 |---|---|---|---|
 | `client_credentials` | — | A service, CI, or machine-to-machine access | Requires `clientSecret`. |
 | `password` | `username`, `password` | A user, non-interactively | Keycloak: enable *Direct access grants* on the client. |
-| `device_code` | — | A user, logging in through the browser | Accepted in the config; not implemented yet. |
+| `device_code` | — | A user, logging in through the browser | authk shows a URL and a code to enter, possibly on another device. See [Device code flow](#device-code-flow). |
 
 Extra fields are only allowed with their flow: `username` is rejected with `client_credentials`, so a typo or a leftover field is reported when the file is loaded.
 
 Why `clientSecret` and `flow` are separate: the client secret authenticates the *application* on every call to the token endpoint, refreshes included, whatever the flow; the flow says how the *identity* is obtained. They combine freely, except `client_credentials`, which needs a secret.
+
+### Device code flow
+
+With `flow: "device_code"`, authk asks the provider for a code, then shows it:
+
+```
+Login required.
+  Open:  https://sso.example.com/realms/dev/device?user_code=WDJB-MJHT
+  or open https://sso.example.com/realms/dev/device and enter the code WDJB-MJHT
+  The code expires at 10:32:00 (in 10m0s).
+```
+
+It then waits until you log in, in any browser, on any machine: it also works over SSH, in a container, or with a detached agent. No password is stored in the config.
+
+- `authk get` without agent logs in on every call: run an agent instead, which logs in once.
+- The agent renews the token with the refresh token. When the session expires (Keycloak *SSO Session Max*, idle timeout, logout), it cannot log in by itself: `authk agent list` shows `LOGIN`, `authk get` fails, and `authk agent login` logs in again.
+- Without refresh token, you must log in again each time the token expires. Add the `offline_access` scope to get one: required with Authentik, optional with Keycloak, where it gives an *offline token* that survives the end of the SSO session (each login then creates an offline session, listed in the account console).
+
+Provider setup:
+
+- **Keycloak**: in the client, *Capability config*, enable *OAuth 2.0 Device Authorization Grant*. The client can be public (*Client authentication: Off*) or confidential.
+- **Authentik**: device codes need a flow on the brand, which Authentik does not provide by default:
+  1. *Flows and Stages > Flows > Create*: name and slug `default-device-code-flow`, designation *Stage Configuration*, authentication *Require authentication*. No stage is needed.
+  2. *System > Brands*, edit the brand: set *Device code flow* to this flow.
+  3. In the OAuth2 provider, keep the *offline_access* scope mapping among the selected scopes, and request it in `scopes`.
+  4. With `clientAuth: "none"`, set the provider *Client type* to *Public*; a *Confidential* provider needs `clientSecret`.
 
 ### Targets
 
@@ -190,6 +216,30 @@ profiles: dev: {
 }
 ```
 
+### Keycloak (device code, public client)
+
+```cue
+profiles: me: {
+	issuer:     "https://keycloak.example.com/realms/dev"
+	clientId:   "authk-cli"
+	clientAuth: "none"
+	flow:       "device_code"
+	scopes: ["openid", "profile", "email", "offline_access"]
+}
+```
+
+### Authentik (device code)
+
+```cue
+profiles: me: {
+	issuer:     "https://authentik.example.com/application/o/my-app/"
+	clientId:   "my-client-id"
+	clientAuth: "none"
+	flow:       "device_code"
+	scopes: ["openid", "profile", "email", "offline_access"]
+}
+```
+
 ### Authentik (machine-to-machine)
 
 ```cue
@@ -250,6 +300,8 @@ This is the main mode. The agent fetches a token, writes it to the profile targe
 ./authk agent --detach    # in the background (-d)
 ```
 
+With the `device_code` flow, the agent shows the login code and waits for you, in the foreground as with `--detach`: the detached agent goes to the background once you logged in.
+
 While the agent runs, `authk get` and `authk inspect` use its current token through a local socket instead of authenticating again. The agent is the only process that renews the token, which matters with refresh token rotation (Keycloak *Revoke Refresh Token*).
 
 An agent serves one profile of a config file. Several agents can run at the same time: one per profile, for example. A second agent for the same profile is refused, except when all the targets of the profile are without `file`: then one agent per project `.env` is possible (`--env`, or a different directory). `--env` is ignored, with a warning, when no target writes the `.env` file.
@@ -258,6 +310,7 @@ An agent serves one profile of a config file. Several agents can run at the same
 ./authk agent list                # list running agents (alias: ls; --wide, --json)
 ./authk agent status [NAME|ID]    # show an agent state (--json available)
 ./authk agent refresh [NAME|ID]   # renew the token now
+./authk agent login [NAME|ID]     # log in again (device_code, once the session expired)
 ./authk agent logs [NAME|ID] -f   # follow the logs of a detached agent
 ./authk agent stop [NAME|ID]      # stop an agent
 ./authk agent stop --all          # stop every agent

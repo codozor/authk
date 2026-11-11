@@ -16,7 +16,6 @@ import (
 	"github.com/codozor/authk/internal/agent"
 	"github.com/codozor/authk/internal/config"
 	"github.com/codozor/authk/internal/env"
-	"github.com/codozor/authk/internal/oidc"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -187,16 +186,21 @@ func runAgent(parent context.Context, envChanged bool) error {
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := oidc.NewClient(profile)
+	client, err := newOIDCClient(profile)
 	if err != nil {
-		return fmt.Errorf("failed to initialize OIDC client: %w", err)
+		return err
 	}
 
-	token, err := client.GetToken(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get initial token: %w", err)
+	// Interactive flows log in once the agent serves, so that a detached agent can show
+	// the login prompt through its status. Others fail fast before.
+	interactive := client.Interactive()
+	var token *oauth2.Token
+	if !interactive {
+		if token, err = client.GetToken(ctx); err != nil {
+			return fmt.Errorf("failed to get initial token: %w", err)
+		}
+		updateTargets(targets, token)
 	}
-	updateTargets(targets, token)
 
 	ln, err := agent.Listen(socket)
 	if err != nil {
@@ -224,6 +228,9 @@ func runAgent(parent context.Context, envChanged bool) error {
 	}()
 
 	refresher := agent.NewRefresher(client, token, func(t *oauth2.Token) { updateTargets(targets, t) })
+	if interactive {
+		refresher.SetLogin(agentLogin(client))
+	}
 	info := agent.Info{
 		ID:         id,
 		Name:       name,
@@ -243,10 +250,33 @@ func runAgent(parent context.Context, envChanged bool) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return refresher.Run(gctx) })
 	g.Go(func() error { return agent.Serve(gctx, ln, refresher, info, stop) })
+	if interactive {
+		g.Go(func() error { return initialLogin(gctx, refresher) })
+	}
 	if err := g.Wait(); err != nil {
 		return err
 	}
 	log.Info().Msg("Shutting down")
+	return nil
+}
+
+// initialLogin runs the first login of an interactive flow. Its failure stops the agent.
+func initialLogin(ctx context.Context, r *agent.Refresher) error {
+	l, err := r.StartLogin(ctx, ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start login: %w", err)
+	}
+	if !isDetachedChild() {
+		printLoginPrompt(os.Stderr, l.Prompt)
+	}
+	select {
+	case <-l.Done():
+	case <-ctx.Done():
+		return nil
+	}
+	if err := l.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
 	return nil
 }
 
@@ -343,8 +373,23 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	line("Profile", "%s", st.Profile)
 	line("Issuer", "%s", st.Issuer)
 	line("Client", "%s", st.ClientID)
-	line("Token", "%s", describeExpiry(st.Expiry))
-	line("Last renewal", "%s", st.LastRenewal.Format(time.DateTime))
+	switch {
+	case !st.Ready:
+		line("Token", "none yet")
+	case st.LoginRequired:
+		line("Token", "%s, cannot be renewed", describeExpiry(st.Expiry))
+	default:
+		line("Token", "%s", describeExpiry(st.Expiry))
+	}
+	if st.LoginRequired && st.Login == nil {
+		line("Login", "required: run \"authk agent login %s\"", st.Name)
+	}
+	if l := st.Login; l != nil {
+		line("Login", "pending: open %s and enter the code %s", l.URL, l.Code)
+	}
+	if !st.LastRenewal.IsZero() {
+		line("Last renewal", "%s", st.LastRenewal.Format(time.DateTime))
+	}
 	line("Refresh", "%t", st.HasRefreshToken)
 	line("ID Token", "%t", st.HasIDToken)
 	if st.LastError != "" {

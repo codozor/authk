@@ -280,3 +280,57 @@ func TestEnsureSocketDir_RejectsSharedDir(t *testing.T) {
 		t.Error("a directory readable by others must be rejected")
 	}
 }
+
+func TestServer_InteractiveLogin(t *testing.T) {
+	r := testRefresher(&fakeClient{lifetime: time.Hour}, nil, nil)
+	fl := newFakeLogin(&oauth2.Token{AccessToken: "logged", Expiry: time.Now().Add(time.Hour)})
+	r.SetLogin(fl.login)
+	client, _ := startAgent(t, r)
+	ctx := context.Background()
+
+	_, err := client.Token(ctx, TypeAccessToken, 0)
+	if !errors.Is(err, ErrLoginRequired) || !strings.Contains(err.Error(), "authk agent login") {
+		t.Fatalf("Token() before login error = %v, want ErrLoginRequired with a hint", err)
+	}
+	if _, err := client.Refresh(ctx); !errors.Is(err, ErrLoginRequired) {
+		t.Errorf("Refresh() before login error = %v, want ErrLoginRequired", err)
+	}
+	st, err := client.Status(ctx)
+	if err != nil || st.Ready || !st.LoginRequired {
+		t.Fatalf("Status() before login = %+v, %v", st, err)
+	}
+
+	prompt, err := client.Login(ctx)
+	if err != nil || prompt.Code != "ABCD" {
+		t.Fatalf("Login() = %+v, %v", prompt, err)
+	}
+	if st, _ := client.Status(ctx); st.Login == nil || st.Login.URL != "https://idp/device" {
+		t.Errorf("pending login not in status: %+v", st)
+	}
+
+	fl.release <- nil
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := client.Token(ctx, TypeAccessToken, 0)
+		if err == nil {
+			if resp.Token != "logged" {
+				t.Errorf("token = %q", resp.Token)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no token after login: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st, _ := client.Status(ctx); !st.Ready || st.LoginRequired || st.Login != nil {
+		t.Errorf("status after login = %+v", st)
+	}
+}
+
+func TestServer_LoginNonInteractive(t *testing.T) {
+	client, _ := startAgent(t, testRefresher(&fakeClient{}, tokenWithID("a", "", time.Hour), nil))
+	if _, err := client.Login(context.Background()); err == nil {
+		t.Error("expected an error for a non-interactive flow")
+	}
+}

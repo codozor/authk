@@ -28,13 +28,22 @@ type Status struct {
 	Targets         []string  `json:"targets"`
 	TargetFiles     []string  `json:"targetFiles"`
 	StartedAt       time.Time `json:"startedAt"`
+	Ready           bool      `json:"ready"` // the agent has a token
 	Expiry          time.Time `json:"expiry,omitzero"`
 	HasRefreshToken bool      `json:"hasRefreshToken"`
 	HasIDToken      bool      `json:"hasIdToken"`
 	LastRenewal     time.Time `json:"lastRenewal"`
 	LastError       string    `json:"lastError,omitempty"`
+
+	// Interactive flows (device_code)
+	LoginRequired bool         `json:"loginRequired,omitempty"` // a login is needed to get or renew the token
+	Login         *LoginPrompt `json:"login,omitempty"`         // pending login
 }
+
+// codeLoginRequired marks an error response caused by ErrLoginRequired.
+const codeLoginRequired = "login_required"
 
 type errorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
