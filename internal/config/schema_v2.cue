@@ -25,10 +25,18 @@ profiles: [string]: #Profile
 }
 
 #Target: {
-	// Without file: the .env file found from the current directory, or --env
-	file?: string
-	key:   string
-	type:  *"access_token" | "id_token"
+	// "env": a KEY="token" line in a .env file. "raw": a file holding only the
+	// token, like the service account token mounted in a pod.
+	format: *"env" | "raw"
+	if format == "env" {
+		// Without file: the .env file found from the current directory, or --env
+		file?: string
+		key:   string
+	}
+	if format == "raw" {
+		file: string
+	}
+	type: *"access_token" | "id_token"
 }
 
 #OIDC: {

@@ -70,8 +70,8 @@ idTokenKey: "MY_ID_TOKEN"
 		Scopes:       []string{"openid", "profile", "email"},
 		// tokenKey and idTokenKey become targets writing the .env file found at runtime
 		Targets: []Target{
-			{Key: "MY_TOKEN", Type: TargetAccessToken},
-			{Key: "MY_ID_TOKEN", Type: TargetIDToken},
+			{Format: FormatEnv, Key: "MY_TOKEN", Type: TargetAccessToken},
+			{Format: FormatEnv, Key: "MY_ID_TOKEN", Type: TargetIDToken},
 		},
 	}
 	if !reflect.DeepEqual(*p, want) {
@@ -115,7 +115,7 @@ user: {
 		t.Errorf("client secret = %q", p.ClientSecret)
 	}
 	// Default tokenKey
-	if !reflect.DeepEqual(p.Targets, []Target{{Key: "TOKEN", Type: TargetAccessToken}}) {
+	if !reflect.DeepEqual(p.Targets, []Target{{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken}}) {
 		t.Errorf("targets = %+v", p.Targets)
 	}
 }
@@ -203,9 +203,9 @@ targets: [
 	dir := filepath.Dir(path)
 	p := mustProfile(t, path, "")
 	want := []Target{
-		{File: filepath.Join(dir, ".env.1"), Key: "KEY1", Type: TargetAccessToken},
-		{File: filepath.Join(dir, ".env.1"), Key: "ID1", Type: TargetIDToken},
-		{File: filepath.Join(dir, ".env.2"), Key: "KEY2", Type: TargetAccessToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.1"), Key: "KEY1", Type: TargetAccessToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.1"), Key: "ID1", Type: TargetIDToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.2"), Key: "KEY2", Type: TargetAccessToken},
 	}
 	if !reflect.DeepEqual(p.Targets, want) {
 		t.Errorf("targets =\n%+v\nwant\n%+v", p.Targets, want)
@@ -272,7 +272,7 @@ func TestLoadV2_Profiles(t *testing.T) {
 		Name: "dev", Provider: ProviderOIDC, Issuer: "https://kc.example.com/realms/dev", ClientID: "authk",
 		ClientSecret: "dev-secret", ClientAuth: AuthPost, Flow: FlowClientCredentials,
 		Scopes:  []string{"openid"},
-		Targets: []Target{{Key: "TOKEN", Type: TargetAccessToken}},
+		Targets: []Target{{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken}},
 	}
 	if !reflect.DeepEqual(*dev, want) {
 		t.Errorf("dev =\n%+v\nwant\n%+v", *dev, want)
@@ -387,6 +387,70 @@ func TestLoadV2_Invalid(t *testing.T) {
 	}
 }
 
+// --- Raw file targets ---
+
+func TestLoadV2_RawTargets(t *testing.T) {
+	path := writeConfig(t, `
+package config
+version: 2
+profiles: p: {
+	issuer: "https://x", clientId: "c", clientSecret: "s", flow: "client_credentials"
+	targets: [
+		{key: "TOKEN"},
+		{format: "raw", file: "secrets/token"},
+		{format: "raw", file: "/abs/id", type: "id_token"},
+	]
+}
+`)
+	p := mustProfile(t, path, "p")
+	want := []Target{
+		{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken},
+		{Format: FormatRaw, File: filepath.Join(filepath.Dir(path), "secrets", "token"), Type: TargetAccessToken},
+		{Format: FormatRaw, File: "/abs/id", Type: TargetIDToken},
+	}
+	if !reflect.DeepEqual(p.Targets, want) {
+		t.Errorf("targets =\n%+v\nwant\n%+v", p.Targets, want)
+	}
+	if !p.HasFileTargets() || !p.UsesEnvFile() || !p.Targets[1].Raw() || p.Targets[0].Raw() {
+		t.Errorf("HasFileTargets %v, UsesEnvFile %v", p.HasFileTargets(), p.UsesEnvFile())
+	}
+
+	// Rendered back by config migrate
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(writeConfig(t, string(out)))
+	if err != nil || !reflect.DeepEqual(again.Profiles, cfg.Profiles) {
+		t.Errorf("round trip changed the config (%v):\n%s", err, out)
+	}
+	if strings.Contains(string(out), `format: "env"`) {
+		t.Errorf("the default format must be omitted:\n%s", out)
+	}
+}
+
+func TestLoadV2_RawTargetsInvalid(t *testing.T) {
+	tests := map[string]string{
+		"raw without file": `{format: "raw"}`,
+		"raw with a key":   `{format: "raw", file: "token", key: "TOKEN"}`,
+		"unknown format":   `{format: "json", file: "token"}`,
+		"env without key":  `{file: ".env"}`,
+	}
+	for name, target := range tests {
+		t.Run(name, func(t *testing.T) {
+			content := "package config\nversion: 2\nprofiles: p: {issuer: \"https://x\", clientId: \"c\", " +
+				"clientSecret: \"s\", flow: \"client_credentials\", targets: [" + target + "]}\n"
+			if _, err := Load(writeConfig(t, content)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
 // --- Kubernetes provider ---
 
 func TestLoadV2_Kubernetes(t *testing.T) {
@@ -417,7 +481,7 @@ profiles: home: {provider: "kubernetes", serviceAccount: "client", kubeconfig: "
 		Kubeconfig: filepath.Join(filepath.Dir(path), "kube", "config"), Context: "kind-dev",
 		Namespace: "my-app", ServiceAccount: "client",
 		Audiences: []string{"https://api.example.com"}, Duration: "1h",
-		Targets: []Target{{Key: "SA_TOKEN", Type: TargetAccessToken}},
+		Targets: []Target{{Format: FormatEnv, Key: "SA_TOKEN", Type: TargetAccessToken}},
 	}
 	if !reflect.DeepEqual(*full, want) {
 		t.Errorf("full =\n%+v\nwant\n%+v", *full, want)

@@ -329,3 +329,59 @@ func TestManager_Update_MissingDirectory(t *testing.T) {
 		t.Errorf("expected a missing directory error, got %v", err)
 	}
 }
+
+func TestWriteRaw(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sa", "token")
+	if err := WriteRaw(path, "jwt-1"); err != nil {
+		t.Fatalf("WriteRaw() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "jwt-1" {
+		t.Errorf("content = %q, %v: want the token alone, without newline", data, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("new file mode = %v, %v, want 0600", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("created directory mode = %v, %v, want 0700", info.Mode().Perm(), err)
+	}
+
+	// Replacing keeps the permissions chosen by the user, and leaves no temporary file
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRaw(path, "jwt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := ReadRaw(path); err != nil || token != "jwt-2" {
+		t.Errorf("ReadRaw() = %q, %v", token, err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o640 {
+		t.Errorf("mode after replace = %v, want 0640", info.Mode().Perm())
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
+		t.Errorf("directory holds %d files, want only the token", len(entries))
+	}
+}
+
+func TestReadRaw(t *testing.T) {
+	dir := t.TempDir()
+	withNewline := filepath.Join(dir, "token")
+	if err := os.WriteFile(withNewline, []byte("jwt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := ReadRaw(withNewline); err != nil || token != "jwt" {
+		t.Errorf("ReadRaw() = %q, %v", token, err)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRaw(empty); err == nil {
+		t.Error("expected an error for an empty file")
+	}
+	if _, err := ReadRaw(filepath.Join(dir, "missing")); err == nil {
+		t.Error("expected an error for a missing file")
+	}
+}

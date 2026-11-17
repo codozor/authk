@@ -122,14 +122,48 @@ func (m *Manager) readLines() ([]string, error) {
 	return lines, scanner.Err()
 }
 
-// newFileMode is the permission of a .env file created by authk: it holds a token.
+// newFileMode is the permission of a file created by authk: it holds a token.
 const newFileMode os.FileMode = 0o600
 
-// writeLines replaces the file atomically (temp file + rename) so that readers never
-// see a truncated file. An existing file keeps its permissions; a new one gets 0600.
-// A symlink is followed, so the link itself is preserved.
+// writeLines replaces the .env file atomically.
 func (m *Manager) writeLines(lines []string) error {
-	path := m.filePath
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if info, err := os.Stat(filepath.Dir(m.filePath)); err != nil || !info.IsDir() {
+		return fmt.Errorf("directory %s does not exist", filepath.Dir(m.filePath))
+	}
+	return writeAtomic(m.filePath, []byte(b.String()))
+}
+
+// WriteRaw replaces the file with the token alone, without newline, like the service
+// account token mounted in a pod. Its directory is created (0700) if needed.
+func WriteRaw(path, token string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("failed to create the directory of %s: %w", path, err)
+	}
+	return writeAtomic(path, []byte(token))
+}
+
+// ReadRaw returns the token of a file written by WriteRaw.
+func ReadRaw(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return token, nil
+}
+
+// writeAtomic replaces the file (temp file + rename) so that readers never see a
+// truncated file. An existing file keeps its permissions; a new one gets 0600. A
+// symlink is followed, so the link itself is preserved.
+func writeAtomic(path string, data []byte) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
@@ -139,12 +173,9 @@ func (m *Manager) writeLines(lines []string) error {
 		mode = info.Mode().Perm()
 	}
 
-	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
-		return fmt.Errorf("directory %s does not exist", filepath.Dir(path))
-	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".authk-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temporary .env file: %w", err)
+		return fmt.Errorf("failed to create a temporary file: %w", err)
 	}
 	tmpName := tmp.Name()
 	committed := false
@@ -155,17 +186,11 @@ func (m *Manager) writeLines(lines []string) error {
 		}
 	}()
 
-	writer := bufio.NewWriter(tmp)
-	for _, line := range lines {
-		if _, err := writer.WriteString(line + "\n"); err != nil {
-			return err
-		}
-	}
-	if err := writer.Flush(); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil {
-		return fmt.Errorf("failed to set .env file permissions: %w", err)
+		return fmt.Errorf("failed to set file permissions: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		return err
@@ -174,7 +199,7 @@ func (m *Manager) writeLines(lines []string) error {
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("failed to replace .env file: %w", err)
+		return fmt.Errorf("failed to replace %s: %w", path, err)
 	}
 	committed = true
 	return nil

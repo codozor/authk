@@ -67,6 +67,12 @@ const (
 	StoreNone    = "none"
 )
 
+// Target formats.
+const (
+	FormatEnv = "env" // a KEY="token" line in a .env file
+	FormatRaw = "raw" // a file holding only the token
+)
+
 // Target types.
 const (
 	TargetAccessToken = "access_token"
@@ -152,12 +158,19 @@ func (p *Profile) Interactive() bool {
 	return !p.Kubernetes() && (p.Flow == FlowDeviceCode || p.Flow == FlowAuthorizationCode)
 }
 
-// Target is a key of a file to update with a token. An empty File means the .env
-// file found from the current directory, or given with --env.
+// Target is a key of a .env file to update with a token, or a file holding only the
+// token (format raw). An empty File means the .env file found from the current
+// directory, or given with --env.
 type Target struct {
-	File string `json:"file,omitempty"`
-	Key  string `json:"key"`
-	Type string `json:"type"`
+	Format string `json:"format,omitempty"`
+	File   string `json:"file,omitempty"`
+	Key    string `json:"key,omitempty"`
+	Type   string `json:"type"`
+}
+
+// Raw reports whether the target file holds only the token.
+func (t *Target) Raw() bool {
+	return t.Format == FormatRaw
 }
 
 // HasFileTargets reports whether a target writes to a fixed file (with file set).

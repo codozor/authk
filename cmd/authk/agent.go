@@ -253,7 +253,7 @@ func runAgent(parent context.Context, envChanged bool) error {
 		info.TokenStore = client.keeper.Backend()
 	}
 	for _, t := range targets {
-		info.Targets = append(info.Targets, fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key))
+		info.Targets = append(info.Targets, describeTarget(t))
 		if !slices.Contains(info.TargetFiles, t.File) {
 			info.TargetFiles = append(info.TargetFiles, t.File)
 		}
@@ -328,9 +328,18 @@ func buildTargets(p *config.Profile) []config.Target {
 		return nil
 	}
 	for _, t := range targets {
-		log.Info().Str("file", t.File).Str("key", t.Key).Str("type", t.Type).Msg("Target")
+		log.Info().Str("file", t.File).Str("format", t.Format).Str("key", t.Key).Str("type", t.Type).Msg("Target")
 	}
 	return targets
+}
+
+// describeTarget describes a target for agent status: "file (type → KEY)", or
+// "file (type, raw)" for a file holding only the token.
+func describeTarget(t config.Target) string {
+	if t.Raw() {
+		return fmt.Sprintf("%s (%s, raw)", t.File, t.Type)
+	}
+	return fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key)
 }
 
 // resolveTargets returns the profile targets with the .env file set on targets
@@ -362,8 +371,13 @@ func updateTargets(targets []config.Target, t *oauth2.Token) {
 			tokenValue = t.AccessToken
 		}
 
-		mgr := env.NewManager(target.File, target.Key)
-		if err := mgr.Update(tokenValue); err != nil {
+		var err error
+		if target.Raw() {
+			err = env.WriteRaw(target.File, tokenValue)
+		} else {
+			err = env.NewManager(target.File, target.Key).Update(tokenValue)
+		}
+		if err != nil {
 			log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
 		} else {
 			log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")

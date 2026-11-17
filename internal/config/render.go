@@ -34,10 +34,14 @@ func Render(c *Config) ([]byte, error) {
 			b.WriteString("targets: [\n")
 			for _, t := range p.Targets {
 				b.WriteString("{")
-				if t.File != "" {
-					fmt.Fprintf(&b, "file: %s, ", quote(t.File))
+				if t.Raw() {
+					fmt.Fprintf(&b, "format: %s, file: %s", quote(FormatRaw), quote(t.File))
+				} else {
+					if t.File != "" {
+						fmt.Fprintf(&b, "file: %s, ", quote(t.File))
+					}
+					fmt.Fprintf(&b, "key: %s", quote(t.Key))
 				}
-				fmt.Fprintf(&b, "key: %s", quote(t.Key))
 				if t.Type != "" && t.Type != TargetAccessToken {
 					fmt.Fprintf(&b, ", type: %s", quote(t.Type))
 				}

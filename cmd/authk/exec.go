@@ -119,7 +119,10 @@ func parseVarFlags(flags []string) ([]execVar, error) {
 	return vars, nil
 }
 
+// targetVars returns the variables of the .env targets (raw files have no variable
+// name), or ACCESS_TOKEN and ID_TOKEN when there is none.
 func targetVars(targets []config.Target) ([]execVar, error) {
+	targets = slices.DeleteFunc(slices.Clone(targets), func(t config.Target) bool { return t.Raw() })
 	if len(targets) == 0 {
 		return []execVar{
 			{Name: "ACCESS_TOKEN", Type: agent.TypeAccessToken},

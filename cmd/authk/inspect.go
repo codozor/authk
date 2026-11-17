@@ -140,6 +140,13 @@ func tokenFromEnv(cmd *cobra.Command, requestedType string) (string, error) {
 		return "", fmt.Errorf("profile %s has no %s target: nothing to read from a file (run an agent and use authk inspect without --from-env)",
 			profile.Name, requestedType)
 	}
+	if target.Raw() {
+		token, err := env.ReadRaw(target.File)
+		if err != nil {
+			return "", fmt.Errorf("failed to read the token file: %w", err)
+		}
+		return token, nil
+	}
 	targetFile, targetKey := target.File, target.Key
 
 	// Final check to find the file on disk (it might be in a parent directory)
