@@ -25,8 +25,15 @@ type session struct {
 	noPrompt bool
 }
 
+// errProviderNotImplemented is returned for a profile whose provider is accepted by the
+// config but cannot get tokens yet.
+var errProviderNotImplemented = errors.New("provider not implemented yet")
+
 // newSession returns the session of a profile.
 func newSession(p *config.Profile) (*session, error) {
+	if p.Kubernetes() {
+		return nil, fmt.Errorf("profile %s: %w: %s", p.Name, errProviderNotImplemented, p.Provider)
+	}
 	client, err := newOIDCClient(p)
 	if err != nil {
 		return nil, err

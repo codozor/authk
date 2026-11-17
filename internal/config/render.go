@@ -24,33 +24,10 @@ func Render(c *Config) ([]byte, error) {
 	for _, name := range c.ProfileNames() {
 		p := c.Profiles[name]
 		fmt.Fprintf(&b, "\nprofiles: %s: {\n", label(name))
-		fmt.Fprintf(&b, "issuer: %s\n", quote(p.Issuer))
-		fmt.Fprintf(&b, "clientId: %s\n", quote(p.ClientID))
-		if p.ClientSecret != "" {
-			fmt.Fprintf(&b, "clientSecret: %s\n", quote(p.ClientSecret))
-		}
-		if p.ClientAuth != "" && p.ClientAuth != AuthBasic {
-			fmt.Fprintf(&b, "clientAuth: %s\n", quote(p.ClientAuth))
-		}
-
-		fmt.Fprintf(&b, "flow: %s\n", quote(p.Flow))
-		if p.Flow == FlowPassword {
-			fmt.Fprintf(&b, "username: %s\n", quote(p.Username))
-			fmt.Fprintf(&b, "password: %s\n", quote(p.Password))
-		}
-		if p.Flow == FlowAuthorizationCode && p.RedirectPort != 0 {
-			fmt.Fprintf(&b, "redirectPort: %d\n", p.RedirectPort)
-		}
-		if p.TokenStore != "" && p.TokenStore != StoreAuto {
-			fmt.Fprintf(&b, "tokenStore: %s\n", quote(p.TokenStore))
-		}
-
-		if !slices.Equal(p.Scopes, defaultScopes) {
-			quoted := make([]string, 0, len(p.Scopes))
-			for _, s := range p.Scopes {
-				quoted = append(quoted, quote(s))
-			}
-			fmt.Fprintf(&b, "scopes: [%s]\n", strings.Join(quoted, ", "))
+		if p.Kubernetes() {
+			renderKubernetes(&b, &p)
+		} else {
+			renderOIDC(&b, &p)
 		}
 
 		if len(p.Targets) > 0 {
@@ -76,6 +53,62 @@ func Render(c *Config) ([]byte, error) {
 		return nil, fmt.Errorf("failed to format config: %w", err)
 	}
 	return out, nil
+}
+
+func renderOIDC(b *strings.Builder, p *Profile) {
+	fmt.Fprintf(b, "issuer: %s\n", quote(p.Issuer))
+	fmt.Fprintf(b, "clientId: %s\n", quote(p.ClientID))
+	if p.ClientSecret != "" {
+		fmt.Fprintf(b, "clientSecret: %s\n", quote(p.ClientSecret))
+	}
+	if p.ClientAuth != "" && p.ClientAuth != AuthBasic {
+		fmt.Fprintf(b, "clientAuth: %s\n", quote(p.ClientAuth))
+	}
+
+	fmt.Fprintf(b, "flow: %s\n", quote(p.Flow))
+	if p.Flow == FlowPassword {
+		fmt.Fprintf(b, "username: %s\n", quote(p.Username))
+		fmt.Fprintf(b, "password: %s\n", quote(p.Password))
+	}
+	if p.Flow == FlowAuthorizationCode && p.RedirectPort != 0 {
+		fmt.Fprintf(b, "redirectPort: %d\n", p.RedirectPort)
+	}
+	if p.TokenStore != "" && p.TokenStore != StoreAuto {
+		fmt.Fprintf(b, "tokenStore: %s\n", quote(p.TokenStore))
+	}
+
+	if !slices.Equal(p.Scopes, defaultScopes) {
+		fmt.Fprintf(b, "scopes: %s\n", quoteList(p.Scopes))
+	}
+}
+
+func renderKubernetes(b *strings.Builder, p *Profile) {
+	fmt.Fprintf(b, "provider: %s\n", quote(ProviderKubernetes))
+	for _, f := range []struct{ name, value string }{
+		{"kubeconfig", p.Kubeconfig},
+		{"context", p.Context},
+		{"namespace", p.Namespace},
+		{"serviceAccount", p.ServiceAccount},
+	} {
+		if f.value != "" {
+			fmt.Fprintf(b, "%s: %s\n", f.name, quote(f.value))
+		}
+	}
+	if len(p.Audiences) > 0 {
+		fmt.Fprintf(b, "audiences: %s\n", quoteList(p.Audiences))
+	}
+	if p.Duration != "" {
+		fmt.Fprintf(b, "duration: %s\n", quote(p.Duration))
+	}
+}
+
+// quoteList returns values as a CUE list of strings.
+func quoteList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, quote(v))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // defaultScopes are the scopes of the schema default, omitted when rendering.

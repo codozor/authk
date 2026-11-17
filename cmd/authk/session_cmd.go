@@ -34,7 +34,7 @@ Running agents of the profile switch to the new session.`,
 			return err
 		}
 		if !profile.Interactive() {
-			return fmt.Errorf("profile %s uses the %s flow: it needs no login, authk authenticates by itself", profile.Name, profile.Flow)
+			return fmt.Errorf("profile %s uses %s: it needs no login, authk authenticates by itself", profile.Name, profile.Method())
 		}
 		s, err := newSession(profile)
 		if err != nil {
@@ -96,7 +96,7 @@ stop them with "authk agent stop".`,
 			return err
 		}
 		if !profile.Interactive() {
-			return fmt.Errorf("profile %s uses the %s flow: no session is stored", profile.Name, profile.Flow)
+			return fmt.Errorf("profile %s uses %s: no session is stored", profile.Name, profile.Method())
 		}
 		// Forgetting needs no network: the provider is only contacted to revoke
 		keeper, err := newKeeper(profile)

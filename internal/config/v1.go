@@ -23,6 +23,7 @@ type v1Config struct {
 // Values are copied unresolved: secrets references (ref+...) are kept as is.
 func (v *v1Config) convert() *Config {
 	p := Profile{
+		Provider:     ProviderOIDC,
 		Issuer:       v.OIDC.IssuerURL,
 		ClientID:     v.OIDC.ClientID,
 		ClientSecret: v.OIDC.ClientSecret,
