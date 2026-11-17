@@ -126,6 +126,22 @@ func (p *Profile) Method() string {
 	return "the " + p.Flow + " flow"
 }
 
+// TokenDuration returns the requested validity of a Kubernetes token, 0 when absent
+// (the API server default).
+func (p *Profile) TokenDuration() (time.Duration, error) {
+	if p.Duration == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.Duration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: use a Go duration such as \"1h\" or \"30m\"", p.Duration)
+	}
+	if d < MinKubernetesDuration {
+		return 0, fmt.Errorf("duration %s is too short: Kubernetes requires at least 10m", p.Duration)
+	}
+	return d, nil
+}
+
 // Public reports whether the client has no secret (Keycloak "Client authentication: Off").
 func (p *Profile) Public() bool {
 	return p.ClientAuth == AuthNone || p.ClientSecret == ""
@@ -331,14 +347,8 @@ func (p *Profile) validateKubernetes() error {
 	if p.ServiceAccount == "" {
 		return errors.New("serviceAccount is empty")
 	}
-	if p.Duration != "" {
-		d, err := time.ParseDuration(p.Duration)
-		if err != nil {
-			return fmt.Errorf("invalid duration %q: use a Go duration such as \"1h\" or \"30m\"", p.Duration)
-		}
-		if d < MinKubernetesDuration {
-			return fmt.Errorf("duration %s is too short: Kubernetes requires at least 10m", p.Duration)
-		}
+	if _, err := p.TokenDuration(); err != nil {
+		return err
 	}
 	for _, t := range p.Targets {
 		if t.Type == TargetIDToken {

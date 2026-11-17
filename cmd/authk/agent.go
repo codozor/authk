@@ -245,6 +245,10 @@ func runAgent(parent context.Context, envChanged bool) error {
 		Issuer:     profile.Issuer,
 		ClientID:   profile.ClientID,
 	}
+	if client.kube != nil {
+		info.KubeContext = client.kube.Context()
+		info.ServiceAccount = client.kube.ServiceAccount()
+	}
 	if interactive {
 		info.TokenStore = client.keeper.Backend()
 	}
@@ -383,8 +387,13 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	line("ID", "%s", st.ID)
 	line("Config", "%s", st.ConfigPath)
 	line("Profile", "%s", st.Profile)
-	line("Issuer", "%s", st.Issuer)
-	line("Client", "%s", st.ClientID)
+	if st.ServiceAccount != "" {
+		line("Context", "%s", st.KubeContext)
+		line("Account", "%s", st.ServiceAccount)
+	} else {
+		line("Issuer", "%s", st.Issuer)
+		line("Client", "%s", st.ClientID)
+	}
 	switch {
 	case !st.Ready:
 		line("Token", "none yet")
@@ -412,7 +421,9 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	if !st.LastRenewal.IsZero() {
 		line("Last renewal", "%s", st.LastRenewal.Format(time.DateTime))
 	}
-	line("Refresh", "%t", st.HasRefreshToken)
+	if st.ServiceAccount == "" { // Kubernetes: no refresh token, a new token is asked
+		line("Refresh", "%t", st.HasRefreshToken)
+	}
 	line("ID Token", "%t", st.HasIDToken)
 	if st.LastError != "" {
 		line("Last error", "%s", st.LastError)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/codozor/authk/internal/agent"
 	"github.com/codozor/authk/internal/config"
+	"github.com/codozor/authk/internal/kube"
 	"github.com/codozor/authk/internal/oidc"
 	"github.com/codozor/authk/internal/tokenstore"
 	"github.com/rs/zerolog/log"
@@ -14,9 +15,11 @@ import (
 )
 
 // session is the OIDC client of a profile with its stored refresh token (interactive
-// flows): it logs in only when the stored session cannot be refreshed.
+// flows): it logs in only when the stored session cannot be refreshed. For a Kubernetes
+// profile, it is the Kubernetes client (kube) and Client is nil.
 type session struct {
 	*oidc.Client
+	kube    *kube.Client
 	profile *config.Profile
 	keeper  *tokenstore.Keeper // nil: nothing stored
 
@@ -25,14 +28,14 @@ type session struct {
 	noPrompt bool
 }
 
-// errProviderNotImplemented is returned for a profile whose provider is accepted by the
-// config but cannot get tokens yet.
-var errProviderNotImplemented = errors.New("provider not implemented yet")
-
 // newSession returns the session of a profile.
 func newSession(p *config.Profile) (*session, error) {
 	if p.Kubernetes() {
-		return nil, fmt.Errorf("profile %s: %w: %s", p.Name, errProviderNotImplemented, p.Provider)
+		client, err := kube.NewClient(p)
+		if err != nil {
+			return nil, fmt.Errorf("profile %s: %w", p.Name, err)
+		}
+		return &session{kube: client, profile: p}, nil
 	}
 	client, err := newOIDCClient(p)
 	if err != nil {
@@ -64,14 +67,25 @@ func newKeeper(p *config.Profile) (*tokenstore.Keeper, error) {
 	return keeper, nil
 }
 
+// Interactive reports whether the profile needs the user to log in.
+func (s *session) Interactive() bool {
+	return s.profile.Interactive()
+}
+
 // RefreshToken refreshes old, or the stored session when old is nil or older.
 func (s *session) RefreshToken(ctx context.Context, old *oauth2.Token) (*oauth2.Token, error) {
+	if s.kube != nil {
+		return s.kube.RefreshToken(ctx, old)
+	}
 	return s.keeper.Refresh(ctx, old, s.Client.RefreshToken)
 }
 
 // GetToken returns a new token. For an interactive flow, it first refreshes the stored
 // session, and logs in only if there is none or it expired.
 func (s *session) GetToken(ctx context.Context) (*oauth2.Token, error) {
+	if s.kube != nil {
+		return s.kube.GetToken(ctx)
+	}
 	if !s.Interactive() {
 		return s.Client.GetToken(ctx)
 	}
