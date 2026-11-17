@@ -7,17 +7,18 @@
 ![License](https://img.shields.io/github/license/codozor/authk)
 ![Go Version](https://img.shields.io/github/go-mod/go-version/codozor/authk)
 
-`authk` is a CLI tool designed to establish and maintain an OIDC connection. It automatically updates a `.env` file with a valid access token, ensuring your development environment always has fresh credentials.
+`authk` is a CLI tool designed to establish and maintain an OIDC connection, or to get Kubernetes service account tokens. It automatically updates a `.env` file with a valid access token, ensuring your development environment always has fresh credentials.
  
 ![Authk Workflow](assets/authk_workflow.png)
 
 ## Features
 
 - **OIDC Integration**: Client Credentials, Resource Owner Password Credentials, Device Authorization and Authorization Code with PKCE flows, for Keycloak, Authentik or any OIDC provider.
+- **Kubernetes service accounts**: tokens of a service account, asked to the Kubernetes API like `kubectl create token`, and renewed the same way.
 - **Profiles**: several identities (realms, clients, users) in a single config file, with or without files to write.
 - **Automatic Refresh**: an agent renews tokens before they expire and serves them to `authk get`.
 - **Persistent sessions**: after a browser login, the refresh token is kept in the OS keyring (or a private file), so restarting the agent does not ask you to log in again.
-- **.env Management**: updates keys of `.env` files with the new tokens.
+- **.env Management**: updates keys of `.env` files with the new tokens, or writes the token alone to a file, like the token mounted in a pod.
 - **Command Runner**: `authk exec` runs a command with the tokens in its environment, never written to disk.
 - **Configurable**: uses CUE for flexible and type-safe configuration, with secrets from env, files, SOPS or Kubernetes.
 
@@ -39,7 +40,7 @@ go build -o authk ./cmd/authk
 
 `authk` uses a CUE configuration file (default: `authk.cue`) holding one or more **profiles**. A profile says:
 
-- **which client** asks for tokens: `issuer`, `clientId`, `clientSecret`;
+- **which client** asks for tokens: `issuer`, `clientId`, `clientSecret` (or a Kubernetes service account, see [Kubernetes service accounts](#kubernetes-service-accounts));
 - **how** it gets them: `flow`, with the fields of that flow;
 - **where** to write them: `targets` (optional).
 
@@ -61,6 +62,7 @@ profiles: dev: {
 
 | Field | Required | Description |
 |---|---|---|
+| `provider` | no | `oidc` (default), or `kubernetes` for a service account token: the fields are then those of [Kubernetes service accounts](#kubernetes-service-accounts). |
 | `issuer` | yes | Issuer URL of the realm / application (OIDC discovery is done from it). |
 | `clientId` | yes | Client ID registered in the identity provider. |
 | `clientSecret` | no | Client secret. Absent: **public client** (Keycloak *Client authentication: Off*). |
@@ -172,6 +174,43 @@ Provider setup:
 - **Authentik**: in the OAuth2 provider, add the redirect URI: `http://127.0.0.1:8765/callback` (*Strict*) with `redirectPort: 8765`, or `http://127\.0\.0\.1:\d+/callback` (*Regex*) to accept any port. Keep the *offline_access* scope mapping, as for device code. *Client type* *Public* with `clientAuth: "none"`, or *Confidential* with `clientSecret`.
 - Write `127.0.0.1`, not `localhost`: providers compare redirect URIs as strings.
 
+### Kubernetes service accounts
+
+With `provider: "kubernetes"`, the profile gets the token of a service account from the Kubernetes API (TokenRequest), like `kubectl create token`, with the credentials of your kubeconfig:
+
+```cue
+profiles: "api-sa": {
+	provider:       "kubernetes"
+	context:        "kind-dev"
+	namespace:      "my-app"
+	serviceAccount: "my-app-client"
+	audiences: ["https://my-api.example.com"]
+	duration:       "1h"
+	targets: [{format: "raw", file: ".secrets/token"}]
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `serviceAccount` | yes | Name of the service account. |
+| `namespace` | no | Namespace of the service account. Absent: the namespace of the context, else `default`. |
+| `kubeconfig` | no | Kubeconfig file, relative to the configuration file directory (`~/` for the home directory). Absent: `$KUBECONFIG`, else `~/.kube/config`. |
+| `context` | no | Kubeconfig context. Absent: the current context. |
+| `audiences` | no | Audiences of the token (`aud`). Absent: the audience of the API server. |
+| `duration` | no | Requested validity, a Go duration (`"30m"`, `"1h"`), at least `10m`. The API server may grant less: authk renews according to the expiry it grants. Absent: the API server default (usually 1h). |
+| `targets` | no | As for OIDC profiles; there is no ID token. |
+
+- Your kubeconfig user needs the RBAC permission `create` on `serviceaccounts/token` for the service account, e.g. with a Role:
+  ```yaml
+  rules:
+    - apiGroups: [""]
+      resources: ["serviceaccounts/token"]
+      resourceNames: ["my-app-client"]
+      verbs: ["create"]
+  ```
+- There is no refresh token nor login: the agent asks a new token before the current one expires, and `authk login` / `logout` do not apply.
+- `authk agent status` shows the context and the service account instead of the issuer and the client.
+
 ### Targets
 
 Each target writes a token to a key of a file:
@@ -188,7 +227,18 @@ targets: [
 - **Without `file`**: the `.env` file of the project, found from the current directory (see [File Discovery](#file-discovery)) or given with `--env`.
 - **No `targets` at all**: nothing is written. The profile is used through `authk get` only, and with an agent the token stays in memory: nothing on disk.
 
-`.env` files are written atomically (temporary file + rename): readers never see a partially written file. An existing file keeps its permissions and a symlink is followed; a file created by `authk` gets `0600` permissions since it holds a token.
+With `format: "raw"`, the file holds the token alone, without key nor newline, like the service account token Kubernetes mounts in a pod. `file` is then required, and `key` is not allowed:
+
+```cue
+targets: [
+	{format: "raw", file: ".secrets/token"},
+	{format: "raw", file: ".secrets/id-token", type: "id_token"},
+]
+```
+
+Its directory is created (`0700`) if needed. Applications that re-read the file, like the Kubernetes clients with a projected token, always get the current token. `authk exec` ignores raw targets: they have no variable name.
+
+Files are written atomically (temporary file + rename): readers never see a partially written file. An existing file keeps its permissions and a symlink is followed; a file created by `authk` gets `0600` permissions since it holds a token.
 
 ### Profiles
 

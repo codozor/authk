@@ -21,3 +21,4 @@ commit.txt
 .env
 authk.cue
 **/__debug*
+test/integration/.kubeconfig

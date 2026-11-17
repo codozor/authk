@@ -52,6 +52,22 @@ jobs:
         if: failure()
         run: docker logs authk-keycloak
 
+  integration-k8s:
+    name: Integration (Kubernetes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Start k3s
+        run: make k3s-up CONTAINER=docker
+      - name: Run integration tests
+        run: make integration-k8s
+      - name: k3s logs
+        if: failure()
+        run: docker logs authk-k3s
+
   build:
     name: Build
     runs-on: ubuntu-latest
