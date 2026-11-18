@@ -102,6 +102,20 @@ func migrateFile(path, backup string, content []byte) error {
 	return nil
 }
 
+// kubernetesColumns returns what "config profiles" shows of a Kubernetes profile in the
+// FLOW, CLIENT and ISSUER columns: the provider, the service account and the context.
+func kubernetesColumns(p *config.Profile) (flow, client, issuer string) {
+	client = p.ServiceAccount
+	if p.Namespace != "" {
+		client = p.Namespace + "/" + client
+	}
+	issuer = "context " + p.Context
+	if p.Context == "" {
+		issuer = "current context"
+	}
+	return config.ProviderKubernetes, client, issuer
+}
+
 var configProfilesCmd = &cobra.Command{
 	Use:   "profiles",
 	Short: "List the profiles of the config file",
@@ -121,7 +135,11 @@ var configProfilesCmd = &cobra.Command{
 			if name == selected {
 				mark = "*"
 			}
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", mark, name, p.Flow, p.ClientID, p.Issuer)
+			flow, client, issuer := p.Flow, p.ClientID, p.Issuer
+			if p.Kubernetes() {
+				flow, client, issuer = kubernetesColumns(&p)
+			}
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", mark, name, flow, client, issuer)
 		}
 		if err := w.Flush(); err != nil {
 			return err

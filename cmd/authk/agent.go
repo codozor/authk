@@ -245,11 +245,15 @@ func runAgent(parent context.Context, envChanged bool) error {
 		Issuer:     profile.Issuer,
 		ClientID:   profile.ClientID,
 	}
+	if client.kube != nil {
+		info.KubeContext = client.kube.Context()
+		info.ServiceAccount = client.kube.ServiceAccount()
+	}
 	if interactive {
 		info.TokenStore = client.keeper.Backend()
 	}
 	for _, t := range targets {
-		info.Targets = append(info.Targets, fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key))
+		info.Targets = append(info.Targets, describeTarget(t))
 		if !slices.Contains(info.TargetFiles, t.File) {
 			info.TargetFiles = append(info.TargetFiles, t.File)
 		}
@@ -324,9 +328,18 @@ func buildTargets(p *config.Profile) []config.Target {
 		return nil
 	}
 	for _, t := range targets {
-		log.Info().Str("file", t.File).Str("key", t.Key).Str("type", t.Type).Msg("Target")
+		log.Info().Str("file", t.File).Str("format", t.Format).Str("key", t.Key).Str("type", t.Type).Msg("Target")
 	}
 	return targets
+}
+
+// describeTarget describes a target for agent status: "file (type → KEY)", or
+// "file (type, raw)" for a file holding only the token.
+func describeTarget(t config.Target) string {
+	if t.Raw() {
+		return fmt.Sprintf("%s (%s, raw)", t.File, t.Type)
+	}
+	return fmt.Sprintf("%s (%s → %s)", t.File, t.Type, t.Key)
 }
 
 // resolveTargets returns the profile targets with the .env file set on targets
@@ -358,8 +371,13 @@ func updateTargets(targets []config.Target, t *oauth2.Token) {
 			tokenValue = t.AccessToken
 		}
 
-		mgr := env.NewManager(target.File, target.Key)
-		if err := mgr.Update(tokenValue); err != nil {
+		var err error
+		if target.Raw() {
+			err = env.WriteRaw(target.File, tokenValue)
+		} else {
+			err = env.NewManager(target.File, target.Key).Update(tokenValue)
+		}
+		if err != nil {
 			log.Error().Err(err).Str("file", target.File).Str("type", target.Type).Msg("Failed to update token")
 		} else {
 			log.Info().Str("file", target.File).Str("type", target.Type).Msg("Token updated")
@@ -383,8 +401,13 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	line("ID", "%s", st.ID)
 	line("Config", "%s", st.ConfigPath)
 	line("Profile", "%s", st.Profile)
-	line("Issuer", "%s", st.Issuer)
-	line("Client", "%s", st.ClientID)
+	if st.ServiceAccount != "" {
+		line("Context", "%s", st.KubeContext)
+		line("Account", "%s", st.ServiceAccount)
+	} else {
+		line("Issuer", "%s", st.Issuer)
+		line("Client", "%s", st.ClientID)
+	}
 	switch {
 	case !st.Ready:
 		line("Token", "none yet")
@@ -412,7 +435,9 @@ func printStatus(cmd *cobra.Command, st *agent.Status) error {
 	if !st.LastRenewal.IsZero() {
 		line("Last renewal", "%s", st.LastRenewal.Format(time.DateTime))
 	}
-	line("Refresh", "%t", st.HasRefreshToken)
+	if st.ServiceAccount == "" { // Kubernetes: no refresh token, a new token is asked
+		line("Refresh", "%t", st.HasRefreshToken)
+	}
 	line("ID Token", "%t", st.HasIDToken)
 	if st.LastError != "" {
 		line("Last error", "%s", st.LastError)

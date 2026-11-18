@@ -1,9 +1,11 @@
 //go:build integration
 
 // Package integration runs the authk binary against a real Keycloak, started with the
-// realm of realm.json (see the integration job of the CI):
+// realm of realm.json, and a real Kubernetes API server (see the integration jobs of
+// the CI). The tests of each are skipped when it is not given:
 //
 //	AUTHK_KEYCLOAK_URL=http://localhost:8080 go test -tags integration ./test/integration/
+//	AUTHK_KUBECONFIG=/path/to/admin.kubeconfig go test -tags integration ./test/integration/
 package integration
 
 import (
@@ -28,14 +30,16 @@ const realm = "authk-test"
 
 var (
 	keycloakURL string // e.g. http://localhost:8080
+	kubeconfig  string // admin kubeconfig of a test cluster
 	authkBin    string // the binary under test
 	workRoot    string // per-test directories (short paths: unix socket limit)
 )
 
 func TestMain(m *testing.M) {
 	keycloakURL = strings.TrimSuffix(os.Getenv("AUTHK_KEYCLOAK_URL"), "/")
-	if keycloakURL == "" {
-		fmt.Println("AUTHK_KEYCLOAK_URL is not set: skipping the integration tests")
+	kubeconfig = os.Getenv("AUTHK_KUBECONFIG")
+	if keycloakURL == "" && kubeconfig == "" {
+		fmt.Println("AUTHK_KEYCLOAK_URL and AUTHK_KUBECONFIG are not set: skipping the integration tests")
 		os.Exit(0)
 	}
 	// Not in os.TempDir(): it may be a small tmpfs, and socket paths must stay short
@@ -68,7 +72,7 @@ type env struct {
 	vars []string
 }
 
-// config is the authk.cue of every test: one profile per client of the realm.
+// config is the authk.cue of the Keycloak tests: one profile per client of the realm.
 const config = `version: 2
 
 profiles: svc: {
@@ -111,7 +115,17 @@ profiles: web: {
 }
 `
 
+// newEnv returns an environment whose config has a profile per client of the realm.
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	if keycloakURL == "" {
+		t.Skip("AUTHK_KEYCLOAK_URL is not set")
+	}
+	return newEnvWithConfig(t, fmt.Sprintf(config, keycloakURL+"/realms/"+realm))
+}
+
+// newEnvWithConfig returns an environment with the given authk.cue.
+func newEnvWithConfig(t *testing.T, cfg string) *env {
 	t.Helper()
 	suffix := make([]byte, 3)
 	_, _ = rand.Read(suffix)
@@ -122,8 +136,7 @@ func newEnv(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	issuer := keycloakURL + "/realms/" + realm
-	if err := os.WriteFile(filepath.Join(e.dir, "authk.cue"), []byte(fmt.Sprintf(config, issuer)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(e.dir, "authk.cue"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.vars = append(os.Environ(),

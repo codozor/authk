@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -33,6 +34,15 @@ const CurrentVersion = 2
 
 // DefaultProfileName is the profile created from a version 1 file.
 const DefaultProfileName = "default"
+
+// Providers: where the tokens of a profile come from.
+const (
+	ProviderOIDC       = "oidc"
+	ProviderKubernetes = "kubernetes" // a service account token (TokenRequest API)
+)
+
+// MinKubernetesDuration is the shortest token validity the Kubernetes API accepts.
+const MinKubernetesDuration = 10 * time.Minute
 
 // Flow types.
 const (
@@ -57,6 +67,12 @@ const (
 	StoreNone    = "none"
 )
 
+// Target formats.
+const (
+	FormatEnv = "env" // a KEY="token" line in a .env file
+	FormatRaw = "raw" // a file holding only the token
+)
+
 // Target types.
 const (
 	TargetAccessToken = "access_token"
@@ -73,20 +89,63 @@ type Config struct {
 	sourceVersion int    // version of the file on disk (1 for converted files)
 }
 
-// Profile is one identity: an OIDC client, how to get its tokens and where to write them.
+// Profile is one identity: an OIDC client or a Kubernetes service account, how to get
+// its tokens and where to write them.
 type Profile struct {
-	Name         string   `json:"-"`
-	Issuer       string   `json:"issuer"`
-	ClientID     string   `json:"clientId"`
+	Name     string `json:"-"`
+	Provider string `json:"provider"`
+
+	// provider "oidc"
+	Issuer       string   `json:"issuer,omitempty"`
+	ClientID     string   `json:"clientId,omitempty"`
 	ClientSecret string   `json:"clientSecret,omitempty"`
-	ClientAuth   string   `json:"clientAuth"`
-	Flow         string   `json:"flow"`
+	ClientAuth   string   `json:"clientAuth,omitempty"`
+	Flow         string   `json:"flow,omitempty"`
 	Username     string   `json:"username,omitempty"`     // password flow
 	Password     string   `json:"password,omitempty"`     // password flow
 	RedirectPort int      `json:"redirectPort,omitempty"` // authorization_code flow
 	TokenStore   string   `json:"tokenStore,omitempty"`   // interactive flows
-	Scopes       []string `json:"scopes"`
-	Targets      []Target `json:"targets,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+
+	// provider "kubernetes"
+	Kubeconfig     string   `json:"kubeconfig,omitempty"`
+	Context        string   `json:"context,omitempty"`
+	Namespace      string   `json:"namespace,omitempty"`
+	ServiceAccount string   `json:"serviceAccount,omitempty"`
+	Audiences      []string `json:"audiences,omitempty"`
+	Duration       string   `json:"duration,omitempty"`
+
+	Targets []Target `json:"targets,omitempty"`
+}
+
+// Kubernetes reports whether the profile gets a service account token from Kubernetes.
+func (p *Profile) Kubernetes() bool {
+	return p.Provider == ProviderKubernetes
+}
+
+// Method describes how the profile gets its tokens, for messages: "the password
+// flow", "the kubernetes provider".
+func (p *Profile) Method() string {
+	if p.Kubernetes() {
+		return "the kubernetes provider"
+	}
+	return "the " + p.Flow + " flow"
+}
+
+// TokenDuration returns the requested validity of a Kubernetes token, 0 when absent
+// (the API server default).
+func (p *Profile) TokenDuration() (time.Duration, error) {
+	if p.Duration == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.Duration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: use a Go duration such as \"1h\" or \"30m\"", p.Duration)
+	}
+	if d < MinKubernetesDuration {
+		return 0, fmt.Errorf("duration %s is too short: Kubernetes requires at least 10m", p.Duration)
+	}
+	return d, nil
 }
 
 // Public reports whether the client has no secret (Keycloak "Client authentication: Off").
@@ -96,15 +155,22 @@ func (p *Profile) Public() bool {
 
 // Interactive reports whether the flow needs the user to log in, in a browser.
 func (p *Profile) Interactive() bool {
-	return p.Flow == FlowDeviceCode || p.Flow == FlowAuthorizationCode
+	return !p.Kubernetes() && (p.Flow == FlowDeviceCode || p.Flow == FlowAuthorizationCode)
 }
 
-// Target is a key of a file to update with a token. An empty File means the .env
-// file found from the current directory, or given with --env.
+// Target is a key of a .env file to update with a token, or a file holding only the
+// token (format raw). An empty File means the .env file found from the current
+// directory, or given with --env.
 type Target struct {
-	File string `json:"file,omitempty"`
-	Key  string `json:"key"`
-	Type string `json:"type"`
+	Format string `json:"format,omitempty"`
+	File   string `json:"file,omitempty"`
+	Key    string `json:"key,omitempty"`
+	Type   string `json:"type"`
+}
+
+// Raw reports whether the target file holds only the token.
+func (t *Target) Raw() bool {
+	return t.Format == FormatRaw
 }
 
 // HasFileTargets reports whether a target writes to a fixed file (with file set).
@@ -252,7 +318,7 @@ func (c *Config) Profile(name string) (*Profile, error) {
 		return nil, err
 	}
 	p.Name = name
-	if err := p.resolveTargetPaths(c.path); err != nil {
+	if err := p.resolvePaths(c.path); err != nil {
 		return nil, err
 	}
 	if err := p.validate(); err != nil {
@@ -264,6 +330,9 @@ func (c *Config) Profile(name string) (*Profile, error) {
 // validate checks what the schema cannot: values that come from secrets, and
 // combinations of fields.
 func (p *Profile) validate() error {
+	if p.Kubernetes() {
+		return p.validateKubernetes()
+	}
 	if p.Issuer == "" {
 		return errors.New("issuer is empty")
 	}
@@ -282,6 +351,21 @@ func (p *Profile) validate() error {
 	case FlowPassword:
 		if p.Username == "" || p.Password == "" {
 			return errors.New("the password flow requires a username and a password")
+		}
+	}
+	return nil
+}
+
+func (p *Profile) validateKubernetes() error {
+	if p.ServiceAccount == "" {
+		return errors.New("serviceAccount is empty")
+	}
+	if _, err := p.TokenDuration(); err != nil {
+		return err
+	}
+	for _, t := range p.Targets {
+		if t.Type == TargetIDToken {
+			return fmt.Errorf("target %s: the kubernetes provider gives no ID token", t.Key)
 		}
 	}
 	return nil
@@ -323,9 +407,10 @@ func resolveSecrets(p *Profile) error {
 	return nil
 }
 
-// resolveTargetPaths makes relative target files relative to the config file directory,
-// so that running authk from a subdirectory updates the same files.
-func (p *Profile) resolveTargetPaths(configPath string) error {
+// resolvePaths makes relative target files and kubeconfig relative to the config file
+// directory, so that running authk from a subdirectory uses the same files. A kubeconfig
+// starting with ~/ is relative to the home directory.
+func (p *Profile) resolvePaths(configPath string) error {
 	absConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve config path: %w", err)
@@ -335,13 +420,28 @@ func (p *Profile) resolveTargetPaths(configPath string) error {
 		if t.File == "" {
 			continue // the .env file found at runtime
 		}
-		if filepath.IsAbs(t.File) {
-			p.Targets[i].File = filepath.Clean(t.File)
+		p.Targets[i].File = absPath(baseDir, t.File)
+	}
+	if p.Kubeconfig != "" {
+		if rest, ok := strings.CutPrefix(p.Kubeconfig, "~/"); ok {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("kubeconfig %s: %w", p.Kubeconfig, err)
+			}
+			p.Kubeconfig = filepath.Join(home, rest)
 		} else {
-			p.Targets[i].File = filepath.Join(baseDir, t.File)
+			p.Kubeconfig = absPath(baseDir, p.Kubeconfig)
 		}
 	}
 	return nil
+}
+
+// absPath returns path made absolute relative to baseDir, and cleaned.
+func absPath(baseDir, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(baseDir, path)
 }
 
 func processEnvRefs(v interface{}) error {

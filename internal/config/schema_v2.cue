@@ -8,6 +8,38 @@ defaultProfile?: string
 profiles: [string]: #Profile
 
 #Profile: {
+	// Where the tokens come from: an OIDC provider, or the Kubernetes API (a
+	// service account token)
+	provider: *"oidc" | "kubernetes"
+
+	if provider == "oidc" {
+		#OIDC
+	}
+	if provider == "kubernetes" {
+		#Kubernetes
+	}
+
+	// Files to write the tokens to. Without targets, nothing is written: tokens
+	// are only available through "authk get" (and the agent).
+	targets?: [...#Target]
+}
+
+#Target: {
+	// "env": a KEY="token" line in a .env file. "raw": a file holding only the
+	// token, like the service account token mounted in a pod.
+	format: *"env" | "raw"
+	if format == "env" {
+		// Without file: the .env file found from the current directory, or --env
+		file?: string
+		key:   string
+	}
+	if format == "raw" {
+		file: string
+	}
+	type: *"access_token" | "id_token"
+}
+
+#OIDC: {
 	issuer:   string
 	clientId: string
 	// Absent for a public client (Keycloak "Client authentication: Off")
@@ -33,15 +65,21 @@ profiles: [string]: #Profile
 	}
 
 	scopes: [...string] | *["openid", "profile", "email"]
-
-	// Files to write the tokens to. Without targets, nothing is written: tokens
-	// are only available through "authk get" (and the agent).
-	targets?: [...#Target]
 }
 
-#Target: {
-	// Without file: the .env file found from the current directory, or --env
-	file?: string
-	key:   string
-	type:  *"access_token" | "id_token"
+// A service account token, asked to the Kubernetes API (TokenRequest, like
+// "kubectl create token")
+#Kubernetes: {
+	// Kubeconfig file. Absent: $KUBECONFIG, then ~/.kube/config
+	kubeconfig?: string
+	// Kubeconfig context. Absent: the current context
+	context?: string
+	// Namespace of the service account. Absent: the namespace of the context
+	namespace?: string
+	serviceAccount: string
+	// Audiences of the token. Absent: the audience of the API server
+	audiences?: [...string]
+	// Requested validity, a Go duration ("1h", "30m"), at least 10m. The API
+	// server may grant less. Absent: the API server default
+	duration?: string
 }

@@ -23,8 +23,10 @@ type Status struct {
 	PID             int       `json:"pid"`
 	ConfigPath      string    `json:"configPath"`
 	Profile         string    `json:"profile"`
-	Issuer          string    `json:"issuer"`
-	ClientID        string    `json:"clientId"`
+	Issuer          string    `json:"issuer,omitempty"`         // OIDC
+	ClientID        string    `json:"clientId,omitempty"`       // OIDC
+	KubeContext     string    `json:"kubeContext,omitempty"`    // Kubernetes: kubeconfig context
+	ServiceAccount  string    `json:"serviceAccount,omitempty"` // Kubernetes: namespace/name
 	Targets         []string  `json:"targets"`
 	TargetFiles     []string  `json:"targetFiles"`
 	StartedAt       time.Time `json:"startedAt"`

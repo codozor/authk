@@ -61,6 +61,7 @@ idTokenKey: "MY_ID_TOKEN"
 	p := mustProfile(t, path, "")
 	want := Profile{
 		Name:         DefaultProfileName,
+		Provider:     ProviderOIDC,
 		Issuer:       "https://example.com",
 		ClientID:     "client",
 		ClientSecret: "secret",
@@ -69,8 +70,8 @@ idTokenKey: "MY_ID_TOKEN"
 		Scopes:       []string{"openid", "profile", "email"},
 		// tokenKey and idTokenKey become targets writing the .env file found at runtime
 		Targets: []Target{
-			{Key: "MY_TOKEN", Type: TargetAccessToken},
-			{Key: "MY_ID_TOKEN", Type: TargetIDToken},
+			{Format: FormatEnv, Key: "MY_TOKEN", Type: TargetAccessToken},
+			{Format: FormatEnv, Key: "MY_ID_TOKEN", Type: TargetIDToken},
 		},
 	}
 	if !reflect.DeepEqual(*p, want) {
@@ -114,7 +115,7 @@ user: {
 		t.Errorf("client secret = %q", p.ClientSecret)
 	}
 	// Default tokenKey
-	if !reflect.DeepEqual(p.Targets, []Target{{Key: "TOKEN", Type: TargetAccessToken}}) {
+	if !reflect.DeepEqual(p.Targets, []Target{{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken}}) {
 		t.Errorf("targets = %+v", p.Targets)
 	}
 }
@@ -202,9 +203,9 @@ targets: [
 	dir := filepath.Dir(path)
 	p := mustProfile(t, path, "")
 	want := []Target{
-		{File: filepath.Join(dir, ".env.1"), Key: "KEY1", Type: TargetAccessToken},
-		{File: filepath.Join(dir, ".env.1"), Key: "ID1", Type: TargetIDToken},
-		{File: filepath.Join(dir, ".env.2"), Key: "KEY2", Type: TargetAccessToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.1"), Key: "KEY1", Type: TargetAccessToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.1"), Key: "ID1", Type: TargetIDToken},
+		{Format: FormatEnv, File: filepath.Join(dir, ".env.2"), Key: "KEY2", Type: TargetAccessToken},
 	}
 	if !reflect.DeepEqual(p.Targets, want) {
 		t.Errorf("targets =\n%+v\nwant\n%+v", p.Targets, want)
@@ -268,10 +269,10 @@ func TestLoadV2_Profiles(t *testing.T) {
 		t.Fatalf("Profile(dev) error = %v", err)
 	}
 	want := Profile{
-		Name: "dev", Issuer: "https://kc.example.com/realms/dev", ClientID: "authk",
+		Name: "dev", Provider: ProviderOIDC, Issuer: "https://kc.example.com/realms/dev", ClientID: "authk",
 		ClientSecret: "dev-secret", ClientAuth: AuthPost, Flow: FlowClientCredentials,
 		Scopes:  []string{"openid"},
-		Targets: []Target{{Key: "TOKEN", Type: TargetAccessToken}},
+		Targets: []Target{{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken}},
 	}
 	if !reflect.DeepEqual(*dev, want) {
 		t.Errorf("dev =\n%+v\nwant\n%+v", *dev, want)
@@ -383,6 +384,198 @@ func TestLoadV2_Invalid(t *testing.T) {
 				t.Error("expected an error")
 			}
 		})
+	}
+}
+
+// --- Raw file targets ---
+
+func TestLoadV2_RawTargets(t *testing.T) {
+	path := writeConfig(t, `
+package config
+version: 2
+profiles: p: {
+	issuer: "https://x", clientId: "c", clientSecret: "s", flow: "client_credentials"
+	targets: [
+		{key: "TOKEN"},
+		{format: "raw", file: "secrets/token"},
+		{format: "raw", file: "/abs/id", type: "id_token"},
+	]
+}
+`)
+	p := mustProfile(t, path, "p")
+	want := []Target{
+		{Format: FormatEnv, Key: "TOKEN", Type: TargetAccessToken},
+		{Format: FormatRaw, File: filepath.Join(filepath.Dir(path), "secrets", "token"), Type: TargetAccessToken},
+		{Format: FormatRaw, File: "/abs/id", Type: TargetIDToken},
+	}
+	if !reflect.DeepEqual(p.Targets, want) {
+		t.Errorf("targets =\n%+v\nwant\n%+v", p.Targets, want)
+	}
+	if !p.HasFileTargets() || !p.UsesEnvFile() || !p.Targets[1].Raw() || p.Targets[0].Raw() {
+		t.Errorf("HasFileTargets %v, UsesEnvFile %v", p.HasFileTargets(), p.UsesEnvFile())
+	}
+
+	// Rendered back by config migrate
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Load(writeConfig(t, string(out)))
+	if err != nil || !reflect.DeepEqual(again.Profiles, cfg.Profiles) {
+		t.Errorf("round trip changed the config (%v):\n%s", err, out)
+	}
+	if strings.Contains(string(out), `format: "env"`) {
+		t.Errorf("the default format must be omitted:\n%s", out)
+	}
+}
+
+func TestLoadV2_RawTargetsInvalid(t *testing.T) {
+	tests := map[string]string{
+		"raw without file": `{format: "raw"}`,
+		"raw with a key":   `{format: "raw", file: "token", key: "TOKEN"}`,
+		"unknown format":   `{format: "json", file: "token"}`,
+		"env without key":  `{file: ".env"}`,
+	}
+	for name, target := range tests {
+		t.Run(name, func(t *testing.T) {
+			content := "package config\nversion: 2\nprofiles: p: {issuer: \"https://x\", clientId: \"c\", " +
+				"clientSecret: \"s\", flow: \"client_credentials\", targets: [" + target + "]}\n"
+			if _, err := Load(writeConfig(t, content)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
+// --- Kubernetes provider ---
+
+func TestLoadV2_Kubernetes(t *testing.T) {
+	t.Setenv("AUTHK_TEST_NS", "my-app")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfig(t, `
+package config
+version: 2
+profiles: full: {
+	provider:       "kubernetes"
+	kubeconfig:     "kube/config"
+	context:        "kind-dev"
+	namespace:      "ref+env://AUTHK_TEST_NS"
+	serviceAccount: "client"
+	audiences: ["https://api.example.com"]
+	duration:       "1h"
+	targets: [{key: "SA_TOKEN"}]
+}
+profiles: minimal: {provider: "kubernetes", serviceAccount: "client"}
+profiles: home: {provider: "kubernetes", serviceAccount: "client", kubeconfig: "~/.kube/dev"}
+`)
+	full := mustProfile(t, path, "full")
+	want := Profile{
+		Name: "full", Provider: ProviderKubernetes,
+		Kubeconfig: filepath.Join(filepath.Dir(path), "kube", "config"), Context: "kind-dev",
+		Namespace: "my-app", ServiceAccount: "client",
+		Audiences: []string{"https://api.example.com"}, Duration: "1h",
+		Targets: []Target{{Format: FormatEnv, Key: "SA_TOKEN", Type: TargetAccessToken}},
+	}
+	if !reflect.DeepEqual(*full, want) {
+		t.Errorf("full =\n%+v\nwant\n%+v", *full, want)
+	}
+	if !full.Kubernetes() || full.Interactive() || full.Method() != "the kubernetes provider" {
+		t.Errorf("full: Kubernetes %v, Interactive %v, Method %q", full.Kubernetes(), full.Interactive(), full.Method())
+	}
+
+	// Everything optional is left to the kubeconfig and the API server
+	minimal := mustProfile(t, path, "minimal")
+	if minimal.Kubeconfig != "" || minimal.Context != "" || minimal.Namespace != "" || minimal.Duration != "" ||
+		len(minimal.Audiences) != 0 || len(minimal.Scopes) != 0 || minimal.ClientAuth != "" {
+		t.Errorf("unexpected minimal profile %+v", minimal)
+	}
+
+	if got := mustProfile(t, path, "home").Kubeconfig; got != filepath.Join(home, ".kube", "dev") {
+		t.Errorf("kubeconfig = %q, want it in the home directory", got)
+	}
+}
+
+func TestLoadV2_KubernetesInvalid(t *testing.T) {
+	profile := func(body string) string {
+		return "package config\nversion: 2\nprofiles: p: {\nprovider: \"kubernetes\"\n" + body + "\n}\n"
+	}
+	tests := map[string]string{
+		"unknown provider":            "package config\nversion: 2\nprofiles: p: {provider: \"aws\", serviceAccount: \"s\"}\n",
+		"missing serviceAccount":      profile(`namespace: "ns"`),
+		"OIDC field":                  profile(`serviceAccount: "s"` + "\nissuer: \"https://x\""),
+		"flow":                        profile(`serviceAccount: "s"` + "\nflow: \"client_credentials\""),
+		"scopes":                      profile(`serviceAccount: "s"` + "\nscopes: [\"openid\"]"),
+		"kubernetes field in an OIDC": "package config\nversion: 2\nprofiles: p: {issuer: \"https://x\", clientId: \"c\", clientSecret: \"s\", flow: \"client_credentials\", namespace: \"ns\"}\n",
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, content)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+
+	// Checked once secrets are resolved
+	t.Setenv("AUTHK_TEST_EMPTY", "")
+	profileErrors := map[string]string{
+		"empty serviceAccount": `serviceAccount: "ref+env://AUTHK_TEST_EMPTY"`,
+		"invalid duration":     `serviceAccount: "s"` + "\nduration: \"1 hour\"",
+		"duration too short":   `serviceAccount: "s"` + "\nduration: \"5m\"",
+		"ID token target":      `serviceAccount: "s"` + "\ntargets: [{key: \"ID\", type: \"id_token\"}]",
+	}
+	for name, body := range profileErrors {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(writeConfig(t, profile(body)))
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if _, err := cfg.Profile("p"); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
+func TestRender_KubernetesRoundTrip(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `
+package config
+version: 2
+profiles: sa: {
+	provider:       "kubernetes"
+	kubeconfig:     "~/.kube/dev"
+	context:        "kind-dev"
+	serviceAccount: "client"
+	audiences: ["a", "b"]
+	duration:       "2h"
+	targets: [{key: "SA_TOKEN"}]
+}
+profiles: minimal: {provider: "kubernetes", serviceAccount: "client"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"namespace", "issuer", "flow", "scopes", "clientAuth"} {
+		if strings.Contains(string(out), unwanted) {
+			t.Errorf("rendered config should not contain %s:\n%s", unwanted, out)
+		}
+	}
+	again, err := Load(writeConfig(t, string(out)))
+	if err != nil {
+		t.Fatalf("Load(rendered) error = %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(again.Profiles, cfg.Profiles) {
+		t.Errorf("round trip changed the config:\n%s", out)
 	}
 }
 

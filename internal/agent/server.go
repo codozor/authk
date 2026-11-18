@@ -27,16 +27,18 @@ const renewTimeout = 35 * time.Second
 
 // Info describes what the agent serves, for status reporting.
 type Info struct {
-	ID          string
-	Name        string
-	LogFile     string
-	ConfigPath  string
-	Profile     string
-	Issuer      string
-	ClientID    string
-	Targets     []string
-	TargetFiles []string
-	TokenStore  string // where the refresh token is stored (interactive flows)
+	ID             string
+	Name           string
+	LogFile        string
+	ConfigPath     string
+	Profile        string
+	Issuer         string // OIDC
+	ClientID       string // OIDC
+	KubeContext    string // Kubernetes: kubeconfig context
+	ServiceAccount string // Kubernetes: namespace/name
+	Targets        []string
+	TargetFiles    []string
+	TokenStore     string // where the refresh token is stored (interactive flows)
 }
 
 type server struct {
@@ -232,21 +234,23 @@ func (s *server) renew(seen *oauth2.Token) (*oauth2.Token, error) {
 func (s *server) status() Status {
 	state := s.refresher.State()
 	st := Status{
-		ID:            s.info.ID,
-		Name:          s.info.Name,
-		LogFile:       s.info.LogFile,
-		PID:           os.Getpid(),
-		ConfigPath:    s.info.ConfigPath,
-		Profile:       s.info.Profile,
-		Issuer:        s.info.Issuer,
-		ClientID:      s.info.ClientID,
-		Targets:       s.info.Targets,
-		TargetFiles:   s.info.TargetFiles,
-		StartedAt:     s.startedAt,
-		LastRenewal:   state.LastRenewal,
-		LoginRequired: state.LoginRequired,
-		Login:         state.Login,
-		TokenStore:    s.info.TokenStore,
+		ID:             s.info.ID,
+		Name:           s.info.Name,
+		LogFile:        s.info.LogFile,
+		PID:            os.Getpid(),
+		ConfigPath:     s.info.ConfigPath,
+		Profile:        s.info.Profile,
+		Issuer:         s.info.Issuer,
+		ClientID:       s.info.ClientID,
+		KubeContext:    s.info.KubeContext,
+		ServiceAccount: s.info.ServiceAccount,
+		Targets:        s.info.Targets,
+		TargetFiles:    s.info.TargetFiles,
+		StartedAt:      s.startedAt,
+		LastRenewal:    state.LastRenewal,
+		LoginRequired:  state.LoginRequired,
+		Login:          state.Login,
+		TokenStore:     s.info.TokenStore,
 	}
 	if state.Token != nil {
 		st.Ready = true

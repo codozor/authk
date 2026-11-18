@@ -61,6 +61,16 @@ func TestTargetVars(t *testing.T) {
 		t.Errorf("without targets: got %+v, want %+v", vars, want)
 	}
 
+	// Raw files have no variable name: only raw targets is like no targets
+	raw := []config.Target{{Format: config.FormatRaw, File: "/a/token", Type: agent.TypeAccessToken}}
+	if vars, err = targetVars(raw); err != nil || !reflect.DeepEqual(vars, want) {
+		t.Errorf("with raw targets only: got %+v, %v, want %+v", vars, err, want)
+	}
+	vars, err = targetVars(append(raw, config.Target{Format: config.FormatEnv, Key: "TOKEN", Type: agent.TypeAccessToken}))
+	if want := []execVar{{Name: "TOKEN", Type: agent.TypeAccessToken}}; err != nil || !reflect.DeepEqual(vars, want) {
+		t.Errorf("with raw and env targets: got %+v, %v, want %+v", vars, err, want)
+	}
+
 	if _, err := targetVars([]config.Target{
 		{Key: "TOKEN", Type: agent.TypeAccessToken},
 		{File: "/a/.env", Key: "TOKEN", Type: agent.TypeIDToken},

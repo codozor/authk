@@ -23,13 +23,14 @@ type v1Config struct {
 // Values are copied unresolved: secrets references (ref+...) are kept as is.
 func (v *v1Config) convert() *Config {
 	p := Profile{
+		Provider:     ProviderOIDC,
 		Issuer:       v.OIDC.IssuerURL,
 		ClientID:     v.OIDC.ClientID,
 		ClientSecret: v.OIDC.ClientSecret,
 		ClientAuth:   AuthBasic,
 		Flow:         FlowClientCredentials,
 		Scopes:       v.OIDC.Scopes,
-		Targets:      v.Targets,
+		Targets:      v1Targets(v.Targets),
 	}
 	switch v.OIDC.AuthMethod {
 	case "post":
@@ -50,9 +51,9 @@ func (v *v1Config) convert() *Config {
 	// Without targets, version 1 wrote tokenKey (and idTokenKey) to the .env file
 	// found from the current directory: targets without file do the same.
 	if len(p.Targets) == 0 {
-		p.Targets = []Target{{Key: v.TokenKey, Type: TargetAccessToken}}
+		p.Targets = []Target{{Format: FormatEnv, Key: v.TokenKey, Type: TargetAccessToken}}
 		if v.IDTokenKey != "" {
-			p.Targets = append(p.Targets, Target{Key: v.IDTokenKey, Type: TargetIDToken})
+			p.Targets = append(p.Targets, Target{Format: FormatEnv, Key: v.IDTokenKey, Type: TargetIDToken})
 		}
 	}
 
@@ -60,4 +61,12 @@ func (v *v1Config) convert() *Config {
 		Version:  CurrentVersion,
 		Profiles: map[string]Profile{DefaultProfileName: p},
 	}
+}
+
+// v1Targets returns the targets of a version 1 file: all of them write .env files.
+func v1Targets(targets []Target) []Target {
+	for i := range targets {
+		targets[i].Format = FormatEnv
+	}
+	return targets
 }
